@@ -13,14 +13,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Reconstruct full AetherPS4 source
+      - name: Reconstruct AetherPS4 source
         shell: bash
         run: |
           set -euxo pipefail
           cat AetherPS4-source.zip.part-* > "$RUNNER_TEMP/AetherPS4-source.zip"
           mkdir -p extracted/source
           unzip -q "$RUNNER_TEMP/AetherPS4-source.zip" -d extracted/source
-          find extracted/source -name '*.xcodeproj' -o -name '*.xcworkspace'
 
       - name: Select iOS project
         shell: bash
@@ -28,102 +27,113 @@ jobs:
           set -euo pipefail
           PROJECT=$(find extracted/source -name 'AetherPS4-iOS.xcodeproj' -print -quit)
           test -n "$PROJECT" || { echo 'ERROR: AetherPS4-iOS.xcodeproj not found'; exit 1; }
-          SCHEME=$(xcodebuild -project "$PROJECT" -list -json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["project"]["schemes"][0])')
+          APP_ROOT=$(dirname "$PROJECT")
           SOURCE_ROOT="$GITHUB_WORKSPACE/extracted/source"
+          SCHEME=$(xcodebuild -project "$PROJECT" -list -json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["project"]["schemes"][0])')
           echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
-          echo "SCHEME=$SCHEME" >> "$GITHUB_ENV"
+          echo "APP_ROOT=$APP_ROOT" >> "$GITHUB_ENV"
           echo "SOURCE_ROOT=$SOURCE_ROOT" >> "$GITHUB_ENV"
+          echo "SCHEME=$SCHEME" >> "$GITHUB_ENV"
 
-      - name: Restore shadPS4 dependencies
+      - name: Restore real shadPS4 CMake project
         shell: bash
         run: |
           set -euxo pipefail
-          cd "$SOURCE_ROOT"
-          clone_dep() {
-            dir="$1"; repo="$2"; ref="${3:-}"
-            if [ ! -d "$dir" ] || [ -z "$(ls -A "$dir" 2>/dev/null)" ]; then
-              rm -rf "$dir"
-              if [ -n "$ref" ]; then
-                git clone --depth 1 --branch "$ref" "$repo" "$dir"
-              else
-                git clone --depth 1 "$repo" "$dir"
-              fi
-            fi
-          }
+          ENGINE_ROOT="$RUNNER_TEMP/shadPS4-engine"
+          git clone --depth 1 --recursive --shallow-submodules https://github.com/shadps4-emu/shadPS4.git "$ENGINE_ROOT"
 
-          # The source archive does not contain its Git submodules. Restore the
-          # dependencies required by its CMakeLists using the upstream repos.
-          rm -rf ext-boost
-          git clone --depth 1 --recurse-submodules --shallow-submodules https://github.com/shadps4-emu/ext-boost.git ext-boost
-          git -C ext-boost submodule update --init --recursive --depth 1
+          # Keep the complete upstream project/CMake/submodule structure, but overlay
+          # AetherPS4's modified emulator sources, including the iOS API and JIT changes.
+          rsync -a "$SOURCE_ROOT/src/" "$ENGINE_ROOT/src/"
 
-          clone_dep spdlog https://github.com/gabime/spdlog.git v2.x
-          clone_dep fmt https://github.com/shadps4-emu/ext-fmt.git
-          clone_dep zlib-ng https://github.com/shadps4-emu/ext-zlib-ng.git
-          clone_dep ffmpeg-core https://github.com/shadps4-emu/ext-ffmpeg-core.git
-          clone_dep freetype https://github.com/freetype/freetype.git
-          clone_dep sdl3 https://github.com/shadexternals/sdl3.git main
-          clone_dep vulkan-headers https://github.com/KhronosGroup/Vulkan-Headers.git
-          clone_dep vma https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
-          clone_dep glslang https://github.com/KhronosGroup/glslang.git
-          clone_dep robin-map https://github.com/Tessil/robin-map.git
-          clone_dep xbyak https://github.com/herumi/xbyak.git
-          clone_dep magic_enum https://github.com/Neargye/magic_enum.git
-          clone_dep toml11 https://github.com/ToruNiina/toml11.git
-          clone_dep zydis https://github.com/zyantific/zydis.git
-          clone_dep sirit https://github.com/shadps4-emu/sirit.git
-          clone_dep libpng https://github.com/pnggroup/libpng.git
-          clone_dep tracy https://github.com/shadps4-emu/tracy.git
-          clone_dep pugixml https://github.com/zeux/pugixml.git
-          clone_dep hwinfo https://github.com/shadps4-emu/ext-hwinfo.git
-          clone_dep date https://github.com/HowardHinnant/date.git
-          clone_dep epoll-shim https://github.com/jiixyj/epoll-shim.git
-          clone_dep json https://github.com/nlohmann/json.git
-          clone_dep miniz https://github.com/richgel999/miniz.git
-          clone_dep CLI11 https://github.com/shadexternals/CLI11.git
-          clone_dep openal-soft https://github.com/shadexternals/openal-soft.git
-          clone_dep libressl https://github.com/shadexternals/libressl.git
-          clone_dep miniupnp https://github.com/miniupnp/miniupnp.git
+          test -f "$ENGINE_ROOT/CMakeLists.txt"
+          grep -q 'cmake_minimum_required' "$ENGINE_ROOT/CMakeLists.txt"
+          grep -q 'project(shadPS4' "$ENGINE_ROOT/CMakeLists.txt"
+          test -f "$ENGINE_ROOT/src/platform/ios/shadps4_ios_api.cpp"
+          test -f "$ENGINE_ROOT/src/platform/ios/shadps4_ios_api.h"
 
-          # This source tree expects these two dependency directories by these names.
-          clone_dep gcn https://github.com/shadps4-emu/ext-gnm.git || true
-          mkdir -p aacdec
-          if [ ! -d aacdec/fdk-aac ] || [ -z "$(ls -A aacdec/fdk-aac 2>/dev/null)" ]; then
-            rm -rf aacdec/fdk-aac
-            git clone --depth 1 https://android.googlesource.com/platform/external/aac aacdec/fdk-aac
-          fi
+          echo "ENGINE_ROOT=$ENGINE_ROOT" >> "$GITHUB_ENV"
 
-          for d in ext-boost spdlog fmt zlib-ng ffmpeg-core freetype sdl3 vulkan-headers vma glslang robin-map xbyak magic_enum toml11 zydis sirit libpng tracy pugixml hwinfo date epoll-shim json miniz CLI11 openal-soft libressl miniupnp aacdec/fdk-aac; do
-            test -d "$d" && test -n "$(ls -A "$d")" || { echo "ERROR: missing dependency $d"; exit 1; }
-          done
+      - name: Add embeddable iOS engine target
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cat >> "$ENGINE_ROOT/CMakeLists.txt" <<'CMAKE'
+
+          # AetherPS4 iOS embedding target. Reuse the source list and build settings of
+          # the normal shadps4 target, replace the CLI main with the iOS C API entrypoint,
+          # and produce a static library that Xcode can link into the Swift application.
+          if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+            get_target_property(AETHER_SHAD_SOURCES shadps4 SOURCES)
+            list(FILTER AETHER_SHAD_SOURCES EXCLUDE REGEX "(^|/)main\\.cpp$")
+            list(APPEND AETHER_SHAD_SOURCES src/platform/ios/shadps4_ios_api.cpp)
+            add_library(shadps4_ios STATIC ${AETHER_SHAD_SOURCES})
+
+            get_target_property(AETHER_SHAD_LINK shadps4 LINK_LIBRARIES)
+            if(AETHER_SHAD_LINK)
+              target_link_libraries(shadps4_ios PRIVATE ${AETHER_SHAD_LINK})
+            endif()
+            get_target_property(AETHER_SHAD_INCLUDES shadps4 INCLUDE_DIRECTORIES)
+            if(AETHER_SHAD_INCLUDES)
+              target_include_directories(shadps4_ios PRIVATE ${AETHER_SHAD_INCLUDES})
+            endif()
+            get_target_property(AETHER_SHAD_DEFS shadps4 COMPILE_DEFINITIONS)
+            if(AETHER_SHAD_DEFS)
+              target_compile_definitions(shadps4_ios PRIVATE ${AETHER_SHAD_DEFS})
+            endif()
+            target_compile_definitions(shadps4_ios PRIVATE SHADPS4_LIBRARY_BUILD=1)
+            target_include_directories(shadps4_ios PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/ios)
+          endif()
+          CMAKE
 
       - name: Configure shadPS4 iOS engine
         shell: bash
         run: |
           set -euxo pipefail
-          cmake -S "$SOURCE_ROOT" -B "$RUNNER_TEMP/shadps4-ios" \
+          cmake -S "$ENGINE_ROOT" -B "$RUNNER_TEMP/shadps4-ios" \
             -G Xcode \
             -DCMAKE_SYSTEM_NAME=iOS \
             -DCMAKE_OSX_SYSROOT=iphoneos \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=17.4 \
-            -DARCHITECTURE=arm64 \
-            -DSHADPS4_LIBRARY_BUILD=ON \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=18.0 \
+            -DENABLE_TESTS=OFF \
+            -DENABLE_UPDATER=OFF \
+            -DENABLE_DISCORD_RPC=OFF \
             -DBUILD_SHARED_LIBS=OFF
 
-      - name: Build shadPS4 iOS engine and dependencies
+      - name: Build shadPS4 iOS engine
         shell: bash
         run: |
           set -euxo pipefail
           cmake --build "$RUNNER_TEMP/shadps4-ios" --config Release --target shadps4_ios
-          find "$RUNNER_TEMP/shadps4-ios" -type f \( -name '*.a' -o -name '*.framework' \) -print | sort
+          ENGINE_LIB=$(find "$RUNNER_TEMP/shadps4-ios" -type f -name 'libshadps4_ios.a' -print -quit)
+          test -n "$ENGINE_LIB" || { echo 'ERROR: libshadps4_ios.a was not produced'; exit 1; }
+          echo "ENGINE_LIB=$ENGINE_LIB" >> "$GITHUB_ENV"
+          find "$RUNNER_TEMP/shadps4-ios" -type f -name '*.a' -print | sort
+
+      - name: Patch Xcode absolute paths
+        shell: bash
+        run: |
+          set -euxo pipefail
+          PBXPROJ="$PROJECT/project.pbxproj"
+          python3 - "$PBXPROJ" "$ENGINE_ROOT" "$RUNNER_TEMP/shadps4-ios" <<'PY'
+          import sys
+          from pathlib import Path
+          p = Path(sys.argv[1])
+          engine = sys.argv[2]
+          build = sys.argv[3]
+          text = p.read_text()
+          old = "/Users/davi/Documents/Coding/AetherCore4/aetherps4-public-release"
+          text = text.replace(old + "/build/shadps4-ios", build)
+          text = text.replace(old, engine)
+          p.write_text(text)
+          PY
 
       - name: Build full iOS application
         shell: bash
         run: |
           set -euxo pipefail
           LIB_DIRS=$(find "$RUNNER_TEMP/shadps4-ios" -type f -name '*.a' -exec dirname {} \; | sort -u | tr '\n' ' ')
-          test -n "$LIB_DIRS" || { echo 'ERROR: no emulator libraries were built'; exit 1; }
           xcodebuild \
             -project "$PROJECT" \
             -scheme "$SCHEME" \
@@ -131,9 +141,9 @@ jobs:
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
-            HEADER_SEARCH_PATHS="$SOURCE_ROOT/src/platform/ios $SOURCE_ROOT/src/core/pkg_extract $SOURCE_ROOT/src/core/sysmodules_import $SOURCE_ROOT/src/core/user_profile_bridge" \
+            HEADER_SEARCH_PATHS="$ENGINE_ROOT/src/platform/ios $ENGINE_ROOT/src/core/pkg_extract $ENGINE_ROOT/src/core/sysmodules_import $ENGINE_ROOT/src/core/user_profile_bridge" \
             LIBRARY_SEARCH_PATHS="$LIB_DIRS" \
-            FRAMEWORK_SEARCH_PATHS="$SOURCE_ROOT/AetherPS4-iOS/Frameworks" \
+            FRAMEWORK_SEARCH_PATHS="$APP_ROOT/Frameworks" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY='' \
