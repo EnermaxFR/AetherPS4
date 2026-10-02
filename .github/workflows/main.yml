@@ -1,0 +1,95 @@
+name: Build AetherPS4 iOS
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-ios:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Find project files
+        run: |
+          echo "=== Repository ==="
+          ls -la
+          echo "=== Xcode projects/workspaces ==="
+          find . -maxdepth 5 \( -name "*.xcodeproj" -o -name "*.xcworkspace" \) -print
+
+      - name: Find iOS scheme
+        id: project
+        shell: bash
+        run: |
+          set -e
+
+          PROJECT=$(find . -name "*.xcodeproj" -print -quit)
+
+          if [ -z "$PROJECT" ]; then
+            echo "ERROR: No .xcodeproj found."
+            echo "The repository must contain an Xcode iOS project."
+            exit 1
+          fi
+
+          echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
+
+          SCHEME=$(xcodebuild \
+            -project "$PROJECT" \
+            -list \
+            -json | python3 -c \
+            'import json,sys; d=json.load(sys.stdin); print(d["project"]["schemes"][0])')
+
+          echo "SCHEME=$SCHEME" >> "$GITHUB_ENV"
+
+          echo "Project: $PROJECT"
+          echo "Scheme: $SCHEME"
+
+      - name: Build iOS application
+        run: |
+          set -o pipefail
+
+          xcodebuild \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Create unsigned IPA
+        shell: bash
+        run: |
+          set -e
+
+          APP=$(find "$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos" \
+            -maxdepth 1 -name "*.app" -print -quit)
+
+          if [ -z "$APP" ]; then
+            echo "ERROR: No .app was generated."
+            exit 1
+          fi
+
+          mkdir -p "$RUNNER_TEMP/Payload"
+          cp -R "$APP" "$RUNNER_TEMP/Payload/"
+
+          cd "$RUNNER_TEMP"
+          zip -r AetherPS4-unsigned.ipa Payload
+
+          ls -lh AetherPS4-unsigned.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: AetherPS4-iOS
+          path: ${{ runner.temp }}/AetherPS4-unsigned.ipa
+          if-no-files-found: error
