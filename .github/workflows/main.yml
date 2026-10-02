@@ -13,48 +13,48 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Show Xcode version
-        run: xcodebuild -version
-
-      - name: Reconstruct and extract project archives
+      - name: Reconstruct full AetherPS4 source
         shell: bash
         run: |
           set -euxo pipefail
-          mkdir -p extracted
+          cat AetherPS4-source.zip.part-* > "$RUNNER_TEMP/AetherPS4-source.zip"
+          mkdir -p extracted/source
+          unzip -q "$RUNNER_TEMP/AetherPS4-source.zip" -d extracted/source
+          echo "=== Full source project ==="
+          find extracted/source -name '*.xcodeproj' -o -name '*.xcworkspace'
+          echo "=== Emulator integration files ==="
+          find extracted/source -type f \( -name 'EmulatorProcess.swift' -o -name 'shadps4_ios_api.cpp' -o -name 'shadps4_ios_api.h' -o -name 'CMakeLists.txt' \) | head -100
 
-          # The source archive was uploaded to GitHub in split pieces.
-          if [ -f AetherPS4-source.zip.part-00 ]; then
-            cat AetherPS4-source.zip.part-* > "$RUNNER_TEMP/AetherPS4-source.zip"
-            unzip -q "$RUNNER_TEMP/AetherPS4-source.zip" -d extracted/source
-          fi
-
-          # Also extract the small GitHub-ready archive if present.
-          if [ -f AetherPS4-GitHub-Ready.zip ]; then
-            unzip -q -o AetherPS4-GitHub-Ready.zip -d extracted/ready
-          fi
-
-          echo "=== Xcode projects/workspaces after extraction ==="
-          find . -name "*.xcodeproj" -o -name "*.xcworkspace"
-
-      - name: Find iOS project and scheme
+      - name: Select full iOS project
         shell: bash
         run: |
           set -euo pipefail
-          PROJECT=$(find . -name "*.xcodeproj" -print -quit)
+          PROJECT=$(find extracted/source -name 'AetherPS4-iOS.xcodeproj' -print -quit)
           if [ -z "$PROJECT" ]; then
-            echo "ERROR: No .xcodeproj found even after extracting the uploaded archives."
-            echo "Top-level extracted files:"
-            find extracted -maxdepth 4 -type f | head -200 || true
+            PROJECT=$(find extracted/source -name '*.xcodeproj' -print -quit)
+          fi
+          test -n "$PROJECT" || { echo 'ERROR: full source has no Xcode project'; exit 1; }
+          SCHEME=$(xcodebuild -project "$PROJECT" -list -json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["project"]["schemes"][0])')
+          echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
+          echo "SCHEME=$SCHEME" >> "$GITHUB_ENV"
+          echo "Using FULL source project: $PROJECT"
+          echo "Scheme: $SCHEME"
+
+      - name: Verify emulator is part of project
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=$(dirname "$PROJECT")
+          echo "Project root: $ROOT"
+          find extracted/source -name 'EmulatorProcess.swift' -print
+          find extracted/source -name 'shadps4_ios_api.h' -print
+          if ! grep -R -q 'shadps4_' "$ROOT" --include='*.swift' --include='*.h' --include='*.mm' --include='*.m'; then
+            echo 'ERROR: The full iOS project does not reference the shadPS4 engine API.'
             exit 1
           fi
 
-          echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
-          SCHEME=$(xcodebuild -project "$PROJECT" -list -json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["project"]["schemes"][0])')
-          echo "SCHEME=$SCHEME" >> "$GITHUB_ENV"
-          echo "Project: $PROJECT"
-          echo "Scheme: $SCHEME"
-
-      - name: Build iOS application
+      - name: Build full iOS application
+        shell: bash
         run: |
           set -o pipefail
           xcodebuild \
@@ -62,30 +62,44 @@ jobs:
             -scheme "$SCHEME" \
             -configuration Release \
             -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_IDENTITY='' \
             build
+
+      - name: Validate generated application
+        shell: bash
+        run: |
+          set -euxo pipefail
+          APP=$(find "$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos" -maxdepth 1 -name '*.app' -print -quit)
+          test -n "$APP"
+          EXE="$APP/$(defaults read "$APP/Info" CFBundleExecutable)"
+          ls -lh "$EXE"
+          file "$EXE"
+          echo '=== shadPS4 symbols ==='
+          nm "$EXE" 2>/dev/null | grep -E 'shadps4_(init|run|prepare_window)' | head -20 || true
+          SIZE=$(stat -f%z "$EXE")
+          if [ "$SIZE" -lt 500000 ]; then
+            echo "ERROR: executable is only $SIZE bytes; emulator core is not linked."
+            exit 1
+          fi
+          echo "APP=$APP" >> "$GITHUB_ENV"
 
       - name: Create unsigned IPA
         shell: bash
         run: |
-          set -e
-          APP=$(find "$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos" -name "*.app" -print -quit)
-          if [ -z "$APP" ]; then
-            echo "ERROR: No .app was generated."
-            exit 1
-          fi
+          set -euxo pipefail
           mkdir -p "$RUNNER_TEMP/Payload"
           cp -R "$APP" "$RUNNER_TEMP/Payload/"
           cd "$RUNNER_TEMP"
-          zip -qr AetherPS4-unsigned.ipa Payload
-          ls -lh AetherPS4-unsigned.ipa
+          zip -qr AetherPS4-with-emulator-unsigned.ipa Payload
+          ls -lh AetherPS4-with-emulator-unsigned.ipa
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: AetherPS4-iOS
-          path: ${{ runner.temp }}/AetherPS4-unsigned.ipa
+          name: AetherPS4-with-emulator
+          path: ${{ runner.temp }}/AetherPS4-with-emulator-unsigned.ipa
           if-no-files-found: error
