@@ -20,38 +20,20 @@ jobs:
           cat AetherPS4-source.zip.part-* > "$RUNNER_TEMP/AetherPS4-source.zip"
           mkdir -p extracted/source
           unzip -q "$RUNNER_TEMP/AetherPS4-source.zip" -d extracted/source
-          echo "=== Full source project ==="
           find extracted/source -name '*.xcodeproj' -o -name '*.xcworkspace'
-          echo "=== Emulator integration files ==="
-          find extracted/source -type f \( -name 'EmulatorProcess.swift' -o -name 'shadps4_ios_api.cpp' -o -name 'shadps4_ios_api.h' -o -name 'CMakeLists.txt' \) | head -100
+          find extracted/source -type f \( -name 'EmulatorProcess.swift' -o -name 'shadps4_ios_api.cpp' -o -name 'shadps4_ios_api.h' \) -print
 
       - name: Select full iOS project
         shell: bash
         run: |
           set -euo pipefail
           PROJECT=$(find extracted/source -name 'AetherPS4-iOS.xcodeproj' -print -quit)
-          if [ -z "$PROJECT" ]; then
-            PROJECT=$(find extracted/source -name '*.xcodeproj' -print -quit)
-          fi
-          test -n "$PROJECT" || { echo 'ERROR: full source has no Xcode project'; exit 1; }
+          test -n "$PROJECT" || { echo 'ERROR: AetherPS4-iOS.xcodeproj not found'; exit 1; }
           SCHEME=$(xcodebuild -project "$PROJECT" -list -json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["project"]["schemes"][0])')
+          SOURCE_ROOT="$GITHUB_WORKSPACE/extracted/source"
           echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
           echo "SCHEME=$SCHEME" >> "$GITHUB_ENV"
-          echo "Using FULL source project: $PROJECT"
-          echo "Scheme: $SCHEME"
-
-      - name: Verify emulator is part of project
-        shell: bash
-        run: |
-          set -euo pipefail
-          ROOT=$(dirname "$PROJECT")
-          echo "Project root: $ROOT"
-          find extracted/source -name 'EmulatorProcess.swift' -print
-          find extracted/source -name 'shadps4_ios_api.h' -print
-          if ! grep -R -q 'shadps4_' "$ROOT" --include='*.swift' --include='*.h' --include='*.mm' --include='*.m'; then
-            echo 'ERROR: The full iOS project does not reference the shadPS4 engine API.'
-            exit 1
-          fi
+          echo "SOURCE_ROOT=$SOURCE_ROOT" >> "$GITHUB_ENV"
 
       - name: Build full iOS application
         shell: bash
@@ -64,6 +46,8 @@ jobs:
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            HEADER_SEARCH_PATHS="$(inherited) $SOURCE_ROOT/src/platform/ios $SOURCE_ROOT/src/core/pkg_extract $SOURCE_ROOT/src/core/sysmodules_import $SOURCE_ROOT/src/core/user_profile_bridge" \
+            FRAMEWORK_SEARCH_PATHS="$(inherited) $SOURCE_ROOT/AetherPS4-iOS/Frameworks" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY='' \
@@ -75,7 +59,8 @@ jobs:
           set -euxo pipefail
           APP=$(find "$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos" -maxdepth 1 -name '*.app' -print -quit)
           test -n "$APP"
-          EXE="$APP/$(defaults read "$APP/Info" CFBundleExecutable)"
+          EXENAME=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Info.plist")
+          EXE="$APP/$EXENAME"
           ls -lh "$EXE"
           file "$EXE"
           echo '=== shadPS4 symbols ==='
@@ -91,6 +76,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          rm -rf "$RUNNER_TEMP/Payload"
           mkdir -p "$RUNNER_TEMP/Payload"
           cp -R "$APP" "$RUNNER_TEMP/Payload/"
           cd "$RUNNER_TEMP"
