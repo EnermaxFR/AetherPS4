@@ -3,8 +3,7 @@ name: Build AetherPS4 iOS
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
+    branches: [ main ]
 
 jobs:
   build-ios:
@@ -17,44 +16,47 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
-      - name: Find project files
-        run: |
-          echo "=== Repository ==="
-          ls -la
-          echo "=== Xcode projects/workspaces ==="
-          find . -maxdepth 5 \( -name "*.xcodeproj" -o -name "*.xcworkspace" \) -print
-
-      - name: Find iOS scheme
-        id: project
+      - name: Reconstruct and extract project archives
         shell: bash
         run: |
-          set -e
+          set -euxo pipefail
+          mkdir -p extracted
 
+          # The source archive was uploaded to GitHub in split pieces.
+          if [ -f AetherPS4-source.zip.part-00 ]; then
+            cat AetherPS4-source.zip.part-* > "$RUNNER_TEMP/AetherPS4-source.zip"
+            unzip -q "$RUNNER_TEMP/AetherPS4-source.zip" -d extracted/source
+          fi
+
+          # Also extract the small GitHub-ready archive if present.
+          if [ -f AetherPS4-GitHub-Ready.zip ]; then
+            unzip -q -o AetherPS4-GitHub-Ready.zip -d extracted/ready
+          fi
+
+          echo "=== Xcode projects/workspaces after extraction ==="
+          find . -name "*.xcodeproj" -o -name "*.xcworkspace"
+
+      - name: Find iOS project and scheme
+        shell: bash
+        run: |
+          set -euo pipefail
           PROJECT=$(find . -name "*.xcodeproj" -print -quit)
-
           if [ -z "$PROJECT" ]; then
-            echo "ERROR: No .xcodeproj found."
-            echo "The repository must contain an Xcode iOS project."
+            echo "ERROR: No .xcodeproj found even after extracting the uploaded archives."
+            echo "Top-level extracted files:"
+            find extracted -maxdepth 4 -type f | head -200 || true
             exit 1
           fi
 
           echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
-
-          SCHEME=$(xcodebuild \
-            -project "$PROJECT" \
-            -list \
-            -json | python3 -c \
-            'import json,sys; d=json.load(sys.stdin); print(d["project"]["schemes"][0])')
-
+          SCHEME=$(xcodebuild -project "$PROJECT" -list -json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["project"]["schemes"][0])')
           echo "SCHEME=$SCHEME" >> "$GITHUB_ENV"
-
           echo "Project: $PROJECT"
           echo "Scheme: $SCHEME"
 
       - name: Build iOS application
         run: |
           set -o pipefail
-
           xcodebuild \
             -project "$PROJECT" \
             -scheme "$SCHEME" \
@@ -70,21 +72,15 @@ jobs:
         shell: bash
         run: |
           set -e
-
-          APP=$(find "$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos" \
-            -maxdepth 1 -name "*.app" -print -quit)
-
+          APP=$(find "$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos" -name "*.app" -print -quit)
           if [ -z "$APP" ]; then
             echo "ERROR: No .app was generated."
             exit 1
           fi
-
           mkdir -p "$RUNNER_TEMP/Payload"
           cp -R "$APP" "$RUNNER_TEMP/Payload/"
-
           cd "$RUNNER_TEMP"
-          zip -r AetherPS4-unsigned.ipa Payload
-
+          zip -qr AetherPS4-unsigned.ipa Payload
           ls -lh AetherPS4-unsigned.ipa
 
       - name: Upload IPA
