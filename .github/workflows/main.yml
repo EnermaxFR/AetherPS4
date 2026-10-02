@@ -21,9 +21,8 @@ jobs:
           mkdir -p extracted/source
           unzip -q "$RUNNER_TEMP/AetherPS4-source.zip" -d extracted/source
           find extracted/source -name '*.xcodeproj' -o -name '*.xcworkspace'
-          find extracted/source -type f \( -name 'EmulatorProcess.swift' -o -name 'shadps4_ios_api.cpp' -o -name 'shadps4_ios_api.h' \) -print
 
-      - name: Select full iOS project
+      - name: Select iOS project
         shell: bash
         run: |
           set -euo pipefail
@@ -35,10 +34,34 @@ jobs:
           echo "SCHEME=$SCHEME" >> "$GITHUB_ENV"
           echo "SOURCE_ROOT=$SOURCE_ROOT" >> "$GITHUB_ENV"
 
+      - name: Configure shadPS4 iOS engine
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake -S "$SOURCE_ROOT" -B "$RUNNER_TEMP/shadps4-ios" \
+            -G Xcode \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT=iphoneos \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=17.4 \
+            -DSHADPS4_LIBRARY_BUILD=ON \
+            -DBUILD_SHARED_LIBS=OFF
+
+      - name: Build shadPS4 iOS engine and dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake --build "$RUNNER_TEMP/shadps4-ios" --config Release --target shadps4_ios -- -allowProvisioningUpdates CODE_SIGNING_ALLOWED=NO || \
+          cmake --build "$RUNNER_TEMP/shadps4-ios" --config Release --target shadps4_ios
+          echo '=== Built libraries ==='
+          find "$RUNNER_TEMP/shadps4-ios" -type f \( -name '*.a' -o -name '*.framework' \) -print | sort
+
       - name: Build full iOS application
         shell: bash
         run: |
-          set -o pipefail
+          set -euxo pipefail
+          LIB_DIRS=$(find "$RUNNER_TEMP/shadps4-ios" -type f -name '*.a' -exec dirname {} \; | sort -u | tr '\n' ' ')
+          test -n "$LIB_DIRS" || { echo 'ERROR: no emulator libraries were built'; exit 1; }
           xcodebuild \
             -project "$PROJECT" \
             -scheme "$SCHEME" \
@@ -46,8 +69,9 @@ jobs:
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
-            HEADER_SEARCH_PATHS="$(inherited) $SOURCE_ROOT/src/platform/ios $SOURCE_ROOT/src/core/pkg_extract $SOURCE_ROOT/src/core/sysmodules_import $SOURCE_ROOT/src/core/user_profile_bridge" \
-            FRAMEWORK_SEARCH_PATHS="$(inherited) $SOURCE_ROOT/AetherPS4-iOS/Frameworks" \
+            HEADER_SEARCH_PATHS="$SOURCE_ROOT/src/platform/ios $SOURCE_ROOT/src/core/pkg_extract $SOURCE_ROOT/src/core/sysmodules_import $SOURCE_ROOT/src/core/user_profile_bridge" \
+            LIBRARY_SEARCH_PATHS="$LIB_DIRS" \
+            FRAMEWORK_SEARCH_PATHS="$SOURCE_ROOT/AetherPS4-iOS/Frameworks" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY='' \
@@ -64,7 +88,7 @@ jobs:
           ls -lh "$EXE"
           file "$EXE"
           echo '=== shadPS4 symbols ==='
-          nm "$EXE" 2>/dev/null | grep -E 'shadps4_(init|run|prepare_window)' | head -20 || true
+          nm "$EXE" 2>/dev/null | grep -E 'shadps4_(init|run|prepare_window)' | head -20
           SIZE=$(stat -f%z "$EXE")
           if [ "$SIZE" -lt 500000 ]; then
             echo "ERROR: executable is only $SIZE bytes; emulator core is not linked."
