@@ -41,17 +41,12 @@ jobs:
           set -euxo pipefail
           ENGINE_ROOT="$RUNNER_TEMP/shadPS4-engine"
           git clone --depth 1 --recursive --shallow-submodules https://github.com/shadps4-emu/shadPS4.git "$ENGINE_ROOT"
-
-          # Keep the complete upstream project/CMake/submodule structure, but overlay
-          # AetherPS4's modified emulator sources, including the iOS API and JIT changes.
           rsync -a "$SOURCE_ROOT/src/" "$ENGINE_ROOT/src/"
-
           test -f "$ENGINE_ROOT/CMakeLists.txt"
           grep -q 'cmake_minimum_required' "$ENGINE_ROOT/CMakeLists.txt"
           grep -q 'project(shadPS4' "$ENGINE_ROOT/CMakeLists.txt"
           test -f "$ENGINE_ROOT/src/platform/ios/shadps4_ios_api.cpp"
           test -f "$ENGINE_ROOT/src/platform/ios/shadps4_ios_api.h"
-
           echo "ENGINE_ROOT=$ENGINE_ROOT" >> "$GITHUB_ENV"
 
       - name: Add embeddable iOS engine target
@@ -60,15 +55,11 @@ jobs:
           set -euxo pipefail
           cat >> "$ENGINE_ROOT/CMakeLists.txt" <<'CMAKE'
 
-          # AetherPS4 iOS embedding target. Reuse the source list and build settings of
-          # the normal shadps4 target, replace the CLI main with the iOS C API entrypoint,
-          # and produce a static library that Xcode can link into the Swift application.
           if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
             get_target_property(AETHER_SHAD_SOURCES shadps4 SOURCES)
             list(FILTER AETHER_SHAD_SOURCES EXCLUDE REGEX "(^|/)main\\.cpp$")
             list(APPEND AETHER_SHAD_SOURCES src/platform/ios/shadps4_ios_api.cpp)
             add_library(shadps4_ios STATIC ${AETHER_SHAD_SOURCES})
-
             get_target_property(AETHER_SHAD_LINK shadps4 LINK_LIBRARIES)
             if(AETHER_SHAD_LINK)
               target_link_libraries(shadps4_ios PRIVATE ${AETHER_SHAD_LINK})
@@ -93,9 +84,11 @@ jobs:
           cmake -S "$ENGINE_ROOT" -B "$RUNNER_TEMP/shadps4-ios" \
             -G Xcode \
             -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_SYSTEM_PROCESSOR=arm64 \
             -DCMAKE_OSX_SYSROOT=iphoneos \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=18.0 \
+            -DALLOWS_ONESHOT_TIMERS_WITH_TIMEOUT_ZERO_EXITCODE=1 \
             -DENABLE_TESTS=OFF \
             -DENABLE_UPDATER=OFF \
             -DENABLE_DISCORD_RPC=OFF \
