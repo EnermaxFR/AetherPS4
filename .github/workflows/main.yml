@@ -50,13 +50,17 @@ jobs:
               fi
             fi
           }
-          clone_if_missing ext-boost https://github.com/boostorg/boost.git boost-1.88.0
+          # Boost's CMake setup lives in submodules, so fetch them recursively.
+          rm -rf ext-boost
+          git clone --depth 1 --branch boost-1.88.0 --recurse-submodules --shallow-submodules https://github.com/boostorg/boost.git ext-boost
+          git -C ext-boost submodule update --init --recursive --depth 1
           clone_if_missing spdlog https://github.com/gabime/spdlog.git v1.15.3
           clone_if_missing fmt https://github.com/fmtlib/fmt.git 11.2.0
           clone_if_missing zlib-ng https://github.com/zlib-ng/zlib-ng.git 2.2.4
           clone_if_missing ffmpeg-core https://github.com/shadps4-emu/ext-ffmpeg-core.git
-          echo '=== Dependency directories ==='
-          for d in ext-boost spdlog fmt zlib-ng ffmpeg-core; do test -d "$d" && echo "$d OK"; done
+          test -f ext-boost/CMakeLists.txt
+          test -d ext-boost/libs
+          for d in ext-boost spdlog fmt zlib-ng ffmpeg-core; do echo "$d OK"; done
 
       - name: Configure shadPS4 iOS engine
         shell: bash
@@ -68,6 +72,7 @@ jobs:
             -DCMAKE_OSX_SYSROOT=iphoneos \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=17.4 \
+            -DARCHITECTURE=arm64 \
             -DSHADPS4_LIBRARY_BUILD=ON \
             -DBUILD_SHARED_LIBS=OFF
 
