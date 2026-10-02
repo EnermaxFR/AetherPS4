@@ -34,6 +34,30 @@ jobs:
           echo "SCHEME=$SCHEME" >> "$GITHUB_ENV"
           echo "SOURCE_ROOT=$SOURCE_ROOT" >> "$GITHUB_ENV"
 
+      - name: Restore missing shadPS4 dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "$SOURCE_ROOT"
+          clone_if_missing() {
+            dir="$1"; repo="$2"; ref="${3:-}"
+            if [ ! -d "$dir" ] || [ -z "$(ls -A "$dir" 2>/dev/null)" ]; then
+              rm -rf "$dir"
+              if [ -n "$ref" ]; then
+                git clone --depth 1 --branch "$ref" "$repo" "$dir"
+              else
+                git clone --depth 1 "$repo" "$dir"
+              fi
+            fi
+          }
+          clone_if_missing ext-boost https://github.com/boostorg/boost.git boost-1.88.0
+          clone_if_missing spdlog https://github.com/gabime/spdlog.git v1.15.3
+          clone_if_missing fmt https://github.com/fmtlib/fmt.git 11.2.0
+          clone_if_missing zlib-ng https://github.com/zlib-ng/zlib-ng.git 2.2.4
+          clone_if_missing ffmpeg-core https://github.com/shadps4-emu/ext-ffmpeg-core.git
+          echo '=== Dependency directories ==='
+          for d in ext-boost spdlog fmt zlib-ng ffmpeg-core; do test -d "$d" && echo "$d OK"; done
+
       - name: Configure shadPS4 iOS engine
         shell: bash
         run: |
@@ -51,9 +75,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          cmake --build "$RUNNER_TEMP/shadps4-ios" --config Release --target shadps4_ios -- -allowProvisioningUpdates CODE_SIGNING_ALLOWED=NO || \
           cmake --build "$RUNNER_TEMP/shadps4-ios" --config Release --target shadps4_ios
-          echo '=== Built libraries ==='
           find "$RUNNER_TEMP/shadps4-ios" -type f \( -name '*.a' -o -name '*.framework' \) -print | sort
 
       - name: Build full iOS application
@@ -87,13 +109,9 @@ jobs:
           EXE="$APP/$EXENAME"
           ls -lh "$EXE"
           file "$EXE"
-          echo '=== shadPS4 symbols ==='
           nm "$EXE" 2>/dev/null | grep -E 'shadps4_(init|run|prepare_window)' | head -20
           SIZE=$(stat -f%z "$EXE")
-          if [ "$SIZE" -lt 500000 ]; then
-            echo "ERROR: executable is only $SIZE bytes; emulator core is not linked."
-            exit 1
-          fi
+          test "$SIZE" -ge 500000 || { echo "ERROR: emulator core is not linked ($SIZE bytes)"; exit 1; }
           echo "APP=$APP" >> "$GITHUB_ENV"
 
       - name: Create unsigned IPA
@@ -105,7 +123,6 @@ jobs:
           cp -R "$APP" "$RUNNER_TEMP/Payload/"
           cd "$RUNNER_TEMP"
           zip -qr AetherPS4-with-emulator-unsigned.ipa Payload
-          ls -lh AetherPS4-with-emulator-unsigned.ipa
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
