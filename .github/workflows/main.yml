@@ -52,8 +52,9 @@ jobs:
           s = s[:probe_start] + replacement + s[probe_end:]
           p.write_text(s)
           PY
-          # ImGuiFileDialog uses std::system(), unavailable on physical iOS.
-          # Keep the desktop implementation out of the iOS build.
+          # ImGuiFileDialog uses std::system(), which Apple marks unavailable on iOS.
+          # Replace only that call with a harmless local shim while keeping the rest
+          # of ImGuiFileDialog compiled (the engine references its symbols).
           python3 - "$ENGINE_ROOT" <<'PY'
           import sys
           from pathlib import Path
@@ -63,7 +64,10 @@ jobs:
               s = p.read_text(errors='ignore')
               if 'std::system(' not in s:
                   continue
-              s = s.replace('std::system(', '/* iOS: shell execution unavailable */ (void)sizeof(')
+              shim = '''\n#if defined(__APPLE__) && defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE\nstatic int MaxPS4IOSSystemUnavailable(const char*) { return -1; }\n#endif\n'''
+              if 'MaxPS4IOSSystemUnavailable' not in s:
+                  s = shim + s
+              s = s.replace('std::system(', 'MaxPS4IOSSystemUnavailable(')
               p.write_text(s)
               patched += 1
               print('patched std::system for iOS:', p)
