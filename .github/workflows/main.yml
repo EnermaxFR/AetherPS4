@@ -35,27 +35,27 @@ jobs:
           test -d "$ENGINE_ROOT/AetherPS4-iOS"
           grep -q 'ENABLE_SHADPS4_IOS_LIB' "$ENGINE_ROOT/CMakeLists.txt"
           grep -q 'add_library(shadps4_ios STATIC' "$ENGINE_ROOT/CMakeLists.txt"
-          # epoll-shim contains runtime feature probes that cannot execute while
-          # CMake is cross-compiling for a physical iPhone. Replace every
-          # check_c_source_runs probe with conservative cached results on iOS.
           python3 - "$ENGINE_ROOT/externals/epoll-shim/src/CMakeLists.txt" <<'PY'
-          import re, sys
+          import sys
           from pathlib import Path
           p = Path(sys.argv[1])
           s = p.read_text()
-          names = re.findall(r'check_c_source_runs\(.*?\n\s*([A-Z][A-Z0-9_]+)\)', s, flags=re.S)
-          if not names:
-              raise SystemExit('No epoll-shim runtime probes found')
-          prefix = 'if(CMAKE_SYSTEM_NAME STREQUAL "iOS")\n'
-          prefix += '  # Conservative cached results for iOS cross-compilation.\n'
-          for name in sorted(set(names)):
-              prefix += f'  set({name} FALSE CACHE BOOL "iOS cross-compile result" FORCE)\n'
-          prefix += 'else()\n'
-          body = s.replace('include(CheckCSourceRuns)', 'include(CheckCSourceRuns)', 1)
-          s = prefix + body + '\nendif()\n'
+          marker = 'include(CheckCSourceRuns)'
+          start = s.index(marker)
+          probe_start = s.index('check_c_source_runs(', start)
+          needle = 'ALLOWS_ONESHOT_TIMERS_WITH_TIMEOUT_ZERO)'
+          probe_end = s.index(needle, probe_start) + len(needle)
+          probe = s[probe_start:probe_end]
+          replacement = '''if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+  set(ALLOWS_ONESHOT_TIMERS_WITH_TIMEOUT_ZERO FALSE CACHE BOOL "iOS cross-compile result" FORCE)
+else()
+''' + probe + '''
+endif()'''
+          s = s[:probe_start] + replacement + s[probe_end:]
           p.write_text(s)
-          print('epoll-shim runtime probes cached for iOS:', ', '.join(sorted(set(names))))
+          print('Patched only epoll-shim runtime probe; library targets remain enabled')
           PY
+          grep -n -A8 -B2 'ALLOWS_ONESHOT_TIMERS_WITH_TIMEOUT_ZERO' "$ENGINE_ROOT/externals/epoll-shim/src/CMakeLists.txt"
           echo "ENGINE_ROOT=$ENGINE_ROOT" >> "$GITHUB_ENV"
 
       - name: Build native ImGui font embed tool
