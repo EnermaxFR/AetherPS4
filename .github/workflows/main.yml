@@ -35,17 +35,26 @@ jobs:
           test -d "$ENGINE_ROOT/AetherPS4-iOS"
           grep -q 'ENABLE_SHADPS4_IOS_LIB' "$ENGINE_ROOT/CMakeLists.txt"
           grep -q 'add_library(shadps4_ios STATIC' "$ENGINE_ROOT/CMakeLists.txt"
+          # epoll-shim contains runtime feature probes that cannot execute while
+          # CMake is cross-compiling for a physical iPhone. Replace every
+          # check_c_source_runs probe with conservative cached results on iOS.
           python3 - "$ENGINE_ROOT/externals/epoll-shim/src/CMakeLists.txt" <<'PY'
-          import sys
+          import re, sys
           from pathlib import Path
           p = Path(sys.argv[1])
           s = p.read_text()
-          old = '''include(CheckCSourceRuns)\ncheck_c_source_runs(\n  [=[\n#include <sys/types.h>\n#include <sys/event.h>\n#include <sys/time.h>\nint main() {\n  struct kevent kev;\n  EV_SET(&kev, 0, EVFILT_TIMER, EV_ADD | EV_ONESHOT, 0, 0, 0);\n  int kq;\n  return ((kq = kqueue()) >= 0 && kevent(kq, &kev, 1, NULL, 0, NULL) == 0) ? 0 : 1;\n}\n]=]\n  ALLOWS_ONESHOT_TIMERS_WITH_TIMEOUT_ZERO)'''
-          new = '''if(CMAKE_SYSTEM_NAME STREQUAL "iOS")\n  # This is a runtime probe. It cannot execute while cross-compiling for iPhoneOS.\n  # Use the conservative path which enables the epoll-shim timer quirk.\n  set(ALLOWS_ONESHOT_TIMERS_WITH_TIMEOUT_ZERO FALSE CACHE BOOL "iOS cross-compile result" FORCE)\nelse()\n  include(CheckCSourceRuns)\n  check_c_source_runs(\n    [=[\n#include <sys/types.h>\n#include <sys/event.h>\n#include <sys/time.h>\nint main() {\n  struct kevent kev;\n  EV_SET(&kev, 0, EVFILT_TIMER, EV_ADD | EV_ONESHOT, 0, 0, 0);\n  int kq;\n  return ((kq = kqueue()) >= 0 && kevent(kq, &kev, 1, NULL, 0, NULL) == 0) ? 0 : 1;\n}\n]=]\n    ALLOWS_ONESHOT_TIMERS_WITH_TIMEOUT_ZERO)\nendif()'''
-          if old not in s:
-              raise SystemExit('epoll-shim runtime probe block not found')
-          p.write_text(s.replace(old, new, 1))
-          print('Patched epoll-shim runtime probe for iOS cross-compilation')
+          names = re.findall(r'check_c_source_runs\(.*?\n\s*([A-Z][A-Z0-9_]+)\)', s, flags=re.S)
+          if not names:
+              raise SystemExit('No epoll-shim runtime probes found')
+          prefix = 'if(CMAKE_SYSTEM_NAME STREQUAL "iOS")\n'
+          prefix += '  # Conservative cached results for iOS cross-compilation.\n'
+          for name in sorted(set(names)):
+              prefix += f'  set({name} FALSE CACHE BOOL "iOS cross-compile result" FORCE)\n'
+          prefix += 'else()\n'
+          body = s.replace('include(CheckCSourceRuns)', 'include(CheckCSourceRuns)', 1)
+          s = prefix + body + '\nendif()\n'
+          p.write_text(s)
+          print('epoll-shim runtime probes cached for iOS:', ', '.join(sorted(set(names))))
           PY
           echo "ENGINE_ROOT=$ENGINE_ROOT" >> "$GITHUB_ENV"
 
