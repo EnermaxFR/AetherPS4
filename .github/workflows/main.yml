@@ -62,6 +62,28 @@ jobs:
           test -f "$ENGINE_ROOT/src/platform/ios/shadps4_ios_api.h"
           echo "ENGINE_ROOT=$ENGINE_ROOT" >> "$GITHUB_ENV"
 
+      - name: Patch ImGuiFileDialog for iOS
+        shell: bash
+        run: |
+          set -euxo pipefail
+          IFD_CPP=$(find "$ENGINE_ROOT" -type f -name 'ImGuiFileDialog.cpp' -print -quit)
+          test -n "$IFD_CPP" || { echo 'ERROR: ImGuiFileDialog.cpp not found'; exit 1; }
+          python3 - "$IFD_CPP" <<'PY'
+          import sys
+          from pathlib import Path
+          p = Path(sys.argv[1])
+          s = p.read_text()
+          # std::system() is explicitly unavailable on iOS. File-manager launching
+          # is desktop-only functionality, so make those calls no-ops on iOS.
+          s = s.replace('std::system(', 'aether_ios_system(')
+          marker = '#include'
+          pos = s.find('\n', s.find(marker))
+          shim = '''\n#if defined(__APPLE__) && defined(TARGET_OS_IPHONE)\n#include <TargetConditionals.h>\n#endif\n#if defined(__APPLE__) && defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE\nstatic inline int aether_ios_system(const char*) { return -1; }\n#else\nstatic inline int aether_ios_system(const char* command) { return std::system(command); }\n#endif\n'''
+          s = s[:pos+1] + shim + s[pos+1:]
+          p.write_text(s)
+          PY
+          grep -n 'aether_ios_system' "$IFD_CPP" | head
+
       - name: Build native ImGui font embed tool
         shell: bash
         run: |
