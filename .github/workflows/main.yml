@@ -36,7 +36,6 @@ jobs:
           grep -q 'ENABLE_SHADPS4_IOS_LIB' "$ENGINE_ROOT/CMakeLists.txt"
           grep -q 'add_library(shadps4_ios STATIC' "$ENGINE_ROOT/CMakeLists.txt"
 
-          # Cross-compiled iOS binaries cannot be executed by CMake runtime probes.
           python3 - "$ENGINE_ROOT/externals/epoll-shim/src/CMakeLists.txt" <<'PY'
           import sys
           from pathlib import Path
@@ -51,11 +50,9 @@ jobs:
           replacement = 'if(CMAKE_SYSTEM_NAME STREQUAL "iOS")\n'
           replacement += '  set(ALLOWS_ONESHOT_TIMERS_WITH_TIMEOUT_ZERO FALSE CACHE BOOL "iOS cross-compile result" FORCE)\n'
           replacement += 'else()\n' + probe + '\nendif()'
-          s = s[:probe_start] + replacement + s[probe_end:]
-          p.write_text(s)
+          p.write_text(s[:probe_start] + replacement + s[probe_end:])
           PY
 
-          # ImGuiFileDialog uses std::system(), unavailable in an iOS application.
           python3 - "$ENGINE_ROOT" <<'PY'
           import sys
           from pathlib import Path
@@ -71,14 +68,10 @@ jobs:
                   s = helper + s
               p.write_text(s)
               patched += 1
-              print('patched std::system for iOS:', p)
           if not patched:
               raise SystemExit('ImGuiFileDialog.cpp std::system call not found')
           PY
 
-          # signals.cpp references Core::IosJitAllocator on iOS even when the FEX guest
-          # CPU option is disabled, while its header is currently included only inside
-          # SHADPS4_ENABLE_FEX_GUEST_CPU. Make the iOS declaration visible independently.
           python3 - "$ENGINE_ROOT/src/core/signals.cpp" <<'PY'
           import sys
           from pathlib import Path
@@ -91,7 +84,20 @@ jobs:
           if not s.startswith(inc + '\n'):
               s = inc + '\n' + s
           p.write_text(s)
-          print('patched iOS JIT allocator declaration visibility:', p)
+          PY
+
+          # The pinned generator currently creates the app target with iOS 26.0,
+          # while the emulator library is built for iOS 18.0. Keep both sides aligned.
+          python3 - "$ENGINE_ROOT/generate_project.rb" <<'PY'
+          import sys
+          from pathlib import Path
+          p = Path(sys.argv[1])
+          s = p.read_text()
+          old = "project.new_target(:application, project_name, :ios, '26.0')"
+          new = "project.new_target(:application, project_name, :ios, '18.0')"
+          if old not in s:
+              raise SystemExit('generate_project.rb deployment target layout changed')
+          p.write_text(s.replace(old, new, 1))
           PY
 
           echo "ENGINE_ROOT=$ENGINE_ROOT" >> "$GITHUB_ENV"
@@ -180,7 +186,6 @@ jobs:
           if [ "$STATUS" -ne 0 ]; then
             echo '================ EXACT BUILD FAILURE ================'
             grep -n -E '(^|: )(error:|fatal error:)|FAILED:|ninja: build stopped|undefined symbol|Undefined symbols|command not found|protoc' "$LOG" | tail -160 || true
-            echo '================ LAST 200 LINES ====================='
             tail -200 "$LOG" || true
             exit "$STATUS"
           fi
@@ -202,9 +207,20 @@ jobs:
       - name: Build unsigned MaxPS4 application
         shell: bash
         run: |
-          set -euxo pipefail
+          set -uo pipefail
           cd "$ENGINE_ROOT/AetherPS4-iOS"
-          xcodebuild -project AetherPS4-iOS.xcodeproj -scheme AetherPS4-iOS -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath "$RUNNER_TEMP/DerivedData" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' build
+          LOG="$RUNNER_TEMP/maxps4-xcodebuild.log"
+          set +e
+          xcodebuild -project AetherPS4-iOS.xcodeproj -scheme AetherPS4-iOS -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath "$RUNNER_TEMP/DerivedData" IPHONEOS_DEPLOYMENT_TARGET=18.0 CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' build 2>&1 | tee "$LOG"
+          STATUS=${PIPESTATUS[0]}
+          set -e
+          if [ "$STATUS" -ne 0 ]; then
+            echo '================ EXACT XCODE FAILURE ================'
+            grep -n -E 'error:|fatal error:|Undefined symbols|ld: |clang: error:|SwiftCompile|CompileSwift|PhaseScriptExecution|BUILD FAILED' "$LOG" | tail -200 || true
+            echo '================ LAST 250 LINES ====================='
+            tail -250 "$LOG" || true
+            exit "$STATUS"
+          fi
 
       - name: Validate emulator core
         shell: bash
