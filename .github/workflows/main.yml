@@ -73,8 +73,6 @@ jobs:
           from pathlib import Path
           p = Path(sys.argv[1])
           s = p.read_text()
-          # std::system() is explicitly unavailable on iOS. File-manager launching
-          # is desktop-only functionality, so make those calls no-ops on iOS.
           s = s.replace('std::system(', 'aether_ios_system(')
           marker = '#include'
           pos = s.find('\n', s.find(marker))
@@ -82,7 +80,63 @@ jobs:
           s = s[:pos+1] + shim + s[pos+1:]
           p.write_text(s)
           PY
-          grep -n 'aether_ios_system' "$IFD_CPP" | head
+
+      - name: Patch macOS-only dependencies for iOS
+        shell: bash
+        run: |
+          set -euxo pipefail
+          # libusb and hwinfo select macOS IOKit backends merely because __APPLE__
+          # is defined. Those APIs do not exist in the iPhoneOS SDK. Remove their
+          # macOS backend source files from the generated iOS build graph.
+          python3 - "$ENGINE_ROOT" <<'PY'
+          import sys
+          from pathlib import Path
+          root = Path(sys.argv[1])
+          cmakes = list(root.rglob('CMakeLists.txt'))
+          changed = []
+          needles = ('darwin_usb.c', 'darwin_usb.h', 'darwin_usb.cpp',
+                     'battery_macos.cpp', 'battery_macos.mm', 'os_macos.cpp',
+                     'IOPSKeys', 'IOCFBundle')
+          for p in cmakes:
+              try:
+                  s = p.read_text()
+              except UnicodeDecodeError:
+                  continue
+              original = s
+              # Remove source-list lines that are unambiguously macOS-only.
+              lines = []
+              for line in s.splitlines(True):
+                  low = line.lower()
+                  if (('darwin_usb' in low or 'battery_macos' in low or 'os_macos' in low) and
+                      not line.lstrip().startswith('#')):
+                      continue
+                  lines.append(line)
+              s = ''.join(lines)
+              if s != original:
+                  p.write_text(s)
+                  changed.append(str(p))
+          print('Patched CMake files:')
+          print('\n'.join(changed) if changed else '(none; source-level fallback will apply)')
+          PY
+          # Source-level fallback: make files that include unavailable IOKit
+          # headers compile to an empty translation unit on iOS.
+          python3 - "$ENGINE_ROOT" <<'PY'
+          import sys
+          from pathlib import Path
+          root = Path(sys.argv[1])
+          for p in root.rglob('*'):
+              if not p.is_file() or p.suffix.lower() not in {'.c','.cc','.cpp','.cxx','.m','.mm'}:
+                  continue
+              try:
+                  s = p.read_text()
+              except (UnicodeDecodeError, OSError):
+                  continue
+              if 'IOKit/IOCFBundle.h' not in s and 'IOKit/ps/IOPSKeys.h' not in s:
+                  continue
+              wrapped = '#include <TargetConditionals.h>\n#if !TARGET_OS_IPHONE\n' + s + '\n#endif\n'
+              p.write_text(wrapped)
+              print('iOS-disabled:', p)
+          PY
 
       - name: Build native ImGui font embed tool
         shell: bash
