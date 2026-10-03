@@ -77,6 +77,7 @@ jobs:
           # The bundled FFmpeg prebuilt selected by APPLE is macOS, not iOS.
           # shadps4_ios already compiles src/platform/ios/ffmpeg_stub.cpp specifically
           # for this case, so keep the macOS FFmpeg archives out of the Xcode link.
+          # SDL3's iOS camera/sensor backends also require CoreMedia and CoreMotion.
           python3 - "$ENGINE_ROOT/generate_project.rb" <<'PY'
           import sys
           from pathlib import Path
@@ -89,6 +90,11 @@ jobs:
           replacement = marker + "  next if lib.include?('ffmpeg-')\n"
           if marker not in s: raise SystemExit('generate_project.rb library filter layout changed')
           s = s.replace(marker, replacement, 1)
+
+          framework_anchor = "  'CoreHaptics.framework',\n"
+          framework_add = framework_anchor + "  'CoreMedia.framework',\n  'CoreMotion.framework',\n"
+          if framework_anchor not in s: raise SystemExit('generate_project.rb framework list layout changed')
+          s = s.replace(framework_anchor, framework_add, 1)
           p.write_text(s)
           PY
 
@@ -183,10 +189,13 @@ jobs:
           if ! command -v xcodeproj >/dev/null 2>&1; then sudo gem install xcodeproj --no-document; fi
           ruby generate_project.rb
           test -d AetherPS4-iOS/AetherPS4-iOS.xcodeproj
-          if grep -R -q 'ffmpeg-.*libav.*\.a' AetherPS4-iOS/AetherPS4-iOS.xcodeproj/project.pbxproj; then
+          PROJECT=AetherPS4-iOS/AetherPS4-iOS.xcodeproj/project.pbxproj
+          if grep -q 'ffmpeg-.*libav.*\.a' "$PROJECT"; then
             echo 'ERROR: macOS FFmpeg archive leaked into iOS Xcode project'
             exit 1
           fi
+          grep -q 'CoreMedia.framework' "$PROJECT"
+          grep -q 'CoreMotion.framework' "$PROJECT"
 
       - name: Build unsigned MaxPS4 application
         id: xcode_build
