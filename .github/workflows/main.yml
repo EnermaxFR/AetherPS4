@@ -86,8 +86,6 @@ jobs:
           p.write_text(s)
           PY
 
-          # The pinned generator currently creates the app target with iOS 26.0,
-          # while the emulator library is built for iOS 18.0. Keep both sides aligned.
           python3 - "$ENGINE_ROOT/generate_project.rb" <<'PY'
           import sys
           from pathlib import Path
@@ -205,6 +203,8 @@ jobs:
           test -d AetherPS4-iOS/AetherPS4-iOS.xcodeproj
 
       - name: Build unsigned MaxPS4 application
+        id: xcode_build
+        continue-on-error: true
         shell: bash
         run: |
           set -uo pipefail
@@ -213,14 +213,32 @@ jobs:
           set +e
           xcodebuild -project AetherPS4-iOS.xcodeproj -scheme AetherPS4-iOS -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath "$RUNNER_TEMP/DerivedData" IPHONEOS_DEPLOYMENT_TARGET=18.0 CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' build 2>&1 | tee "$LOG"
           STATUS=${PIPESTATUS[0]}
-          set -e
+          echo "$STATUS" > "$RUNNER_TEMP/maxps4-xcodebuild.status"
           if [ "$STATUS" -ne 0 ]; then
             echo '================ EXACT XCODE FAILURE ================'
             grep -n -E 'error:|fatal error:|Undefined symbols|ld: |clang: error:|SwiftCompile|CompileSwift|PhaseScriptExecution|BUILD FAILED' "$LOG" | tail -200 || true
             echo '================ LAST 250 LINES ====================='
             tail -250 "$LOG" || true
-            exit "$STATUS"
           fi
+          exit "$STATUS"
+
+      - name: Upload Xcode diagnostic log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MaxPS4-xcode-diagnostics
+          path: |
+            ${{ runner.temp }}/maxps4-xcodebuild.log
+            ${{ runner.temp }}/maxps4-xcodebuild.status
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Stop after Xcode failure
+        if: steps.xcode_build.outcome == 'failure'
+        shell: bash
+        run: |
+          echo 'Xcode build failed. Diagnostic artifact MaxPS4-xcode-diagnostics was preserved.'
+          exit 1
 
       - name: Validate emulator core
         shell: bash
