@@ -74,10 +74,8 @@ jobs:
           p.write_text(s)
           PY
 
-          # The bundled FFmpeg prebuilt selected by APPLE is macOS, not iOS.
-          # shadps4_ios already compiles src/platform/ios/ffmpeg_stub.cpp specifically
-          # for this case, so keep the macOS FFmpeg archives out of the Xcode link.
-          # SDL3's iOS camera/sensor backends also require CoreMedia and CoreMotion.
+          # Match the iOS deployment target, exclude non-iOS FFmpeg archives from the
+          # generated Xcode link, and add SDL3's required iOS frameworks.
           python3 - "$ENGINE_ROOT/generate_project.rb" <<'PY'
           import sys
           from pathlib import Path
@@ -86,15 +84,20 @@ jobs:
           new_target = "project.new_target(:application, project_name, :ios, '18.0')"
           if old_target not in s: raise SystemExit('generate_project.rb deployment target layout changed')
           s = s.replace(old_target, new_target, 1)
-          marker = "  next if lib.include?('CMakeFiles')\n"
-          replacement = marker + "  next if lib.include?('ffmpeg-')\n"
-          if marker not in s: raise SystemExit('generate_project.rb library filter layout changed')
-          s = s.replace(marker, replacement, 1)
 
-          framework_anchor = "  'CoreHaptics.framework',\n"
-          framework_add = framework_anchor + "  'CoreMedia.framework',\n  'CoreMotion.framework',\n"
-          if framework_anchor not in s: raise SystemExit('generate_project.rb framework list layout changed')
-          s = s.replace(framework_anchor, framework_add, 1)
+          marker = "  next if lib.include?('CMakeFiles')\n"
+          if marker not in s: raise SystemExit('generate_project.rb library filter layout changed')
+          s = s.replace(marker, marker + "  next if lib.include?('ffmpeg-')\n", 1)
+
+          # AetherPS4 adds SDK frameworks one-by-one rather than through a Ruby array.
+          anchor = "app_target.frameworks_build_phase.add_file_reference(project.frameworks_group.new_file('System/Library/Frameworks/CoreHaptics.framework', :sdk_root), true)\n"
+          additions = (
+              anchor
+              + "app_target.frameworks_build_phase.add_file_reference(project.frameworks_group.new_file('System/Library/Frameworks/CoreMedia.framework', :sdk_root), true)\n"
+              + "app_target.frameworks_build_phase.add_file_reference(project.frameworks_group.new_file('System/Library/Frameworks/CoreMotion.framework', :sdk_root), true)\n"
+          )
+          if anchor not in s: raise SystemExit('generate_project.rb CoreHaptics framework anchor changed')
+          s = s.replace(anchor, additions, 1)
           p.write_text(s)
           PY
 
