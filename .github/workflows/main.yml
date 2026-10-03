@@ -60,6 +60,18 @@ jobs:
           test -f "$ENGINE_ROOT/src/platform/ios/shadps4_ios_api.h"
           echo "ENGINE_ROOT=$ENGINE_ROOT" >> "$GITHUB_ENV"
 
+      - name: Build native ImGui font embed tool
+        shell: bash
+        run: |
+          set -euxo pipefail
+          FONT_EMBED_SRC=$(find "$ENGINE_ROOT/externals" -type f -path '*/misc/fonts/binary_to_compressed_c.cpp' -print -quit)
+          test -n "$FONT_EMBED_SRC" || { echo 'ERROR: Dear ImGui binary_to_compressed_c.cpp not found'; exit 1; }
+          FONT_EMBED_EXE="$RUNNER_TEMP/Dear_ImGui_FontEmbed"
+          xcrun --sdk macosx clang++ -O2 -std=c++17 "$FONT_EMBED_SRC" -o "$FONT_EMBED_EXE"
+          test -x "$FONT_EMBED_EXE"
+          file "$FONT_EMBED_EXE"
+          echo "IMGUI_FONT_EMBED_EXECUTABLE=$FONT_EMBED_EXE" >> "$GITHUB_ENV"
+
       - name: Add embeddable iOS engine target
         shell: bash
         run: |
@@ -100,6 +112,7 @@ jobs:
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=18.0 \
             -DKK_LLVM_CONFIG="$LLVM_CONFIG" \
+            -DIMGUI_FONT_EMBED_EXECUTABLE="$IMGUI_FONT_EMBED_EXECUTABLE" \
             -DALLOWS_ONESHOT_TIMERS_WITH_TIMEOUT_ZERO_EXITCODE=1 \
             -DENABLE_TESTS=OFF \
             -DENABLE_UPDATER=OFF \
