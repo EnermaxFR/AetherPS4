@@ -23,7 +23,7 @@ jobs:
           echo "NATIVE_PROTOC=$PROTOC" >> "$GITHUB_ENV"
           echo "$(dirname "$PROTOC")" >> "$GITHUB_PATH"
 
-      - name: Restore matching AetherPS4 iOS source tree
+      - name: Restore, patch and audit AetherPS4 iOS source tree
         shell: bash
         run: |
           set -euxo pipefail
@@ -35,6 +35,8 @@ jobs:
           test -d "$ENGINE_ROOT/AetherPS4-iOS"
           grep -q 'ENABLE_SHADPS4_IOS_LIB' "$ENGINE_ROOT/CMakeLists.txt"
           grep -q 'add_library(shadps4_ios STATIC' "$ENGINE_ROOT/CMakeLists.txt"
+
+          # Cross-compiled iOS binaries cannot be executed by CMake runtime probes.
           python3 - "$ENGINE_ROOT/externals/epoll-shim/src/CMakeLists.txt" <<'PY'
           import sys
           from pathlib import Path
@@ -52,8 +54,8 @@ jobs:
           s = s[:probe_start] + replacement + s[probe_end:]
           p.write_text(s)
           PY
-          # ImGuiFileDialog uses std::system(), which Apple marks unavailable on iOS.
-          # Replace those call sites with a local helper in this iOS-only build.
+
+          # ImGuiFileDialog uses std::system(), unavailable in an iOS application.
           python3 - "$ENGINE_ROOT" <<'PY'
           import sys
           from pathlib import Path
@@ -66,9 +68,6 @@ jobs:
               s = s.replace('std::system(', 'MaxPS4IOSSystemUnavailable(')
               helper = '\nstatic int MaxPS4IOSSystemUnavailable(const char*) { return -1; }\n'
               if 'static int MaxPS4IOSSystemUnavailable' not in s:
-                  # Declare the helper before every possible call site. It has no
-                  # platform-specific dependencies; this source patch is applied
-                  # only while building the iOS engine.
                   s = helper + s
               p.write_text(s)
               patched += 1
@@ -76,6 +75,27 @@ jobs:
           if not patched:
               raise SystemExit('ImGuiFileDialog.cpp std::system call not found')
           PY
+
+          # signals.cpp references Core::IosJitAllocator on iOS even when the FEX guest
+          # CPU option is disabled, while its header is currently included only inside
+          # SHADPS4_ENABLE_FEX_GUEST_CPU. Make the iOS declaration visible independently.
+          python3 - "$ENGINE_ROOT/src/core/signals.cpp" <<'PY'
+          import sys
+          from pathlib import Path
+          p = Path(sys.argv[1])
+          s = p.read_text()
+          inc = '#include "core/ios/ios_jit_allocator.h"'
+          guarded = '#ifdef SHADPS4_ENABLE_FEX_GUEST_CPU\n#include "common/singleton.h"'
+          if guarded not in s:
+              raise SystemExit('signals.cpp include layout changed; review required')
+          if not s.startswith(inc + '\n'):
+              s = inc + '\n' + s
+          p.write_text(s)
+          print('patched iOS JIT allocator declaration visibility:', p)
+          PY
+
+          # Run the broad compatibility scan now, before spending time on the full build.
+          bash "$GITHUB_WORKSPACE/scripts/audit-ios-port.sh" "$ENGINE_ROOT"
           echo "ENGINE_ROOT=$ENGINE_ROOT" >> "$GITHUB_ENV"
 
       - name: Build native ImGui font embed tool
