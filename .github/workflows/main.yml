@@ -39,63 +39,57 @@ jobs:
           python3 - "$ENGINE_ROOT/externals/epoll-shim/src/CMakeLists.txt" <<'PY'
           import sys
           from pathlib import Path
-          p = Path(sys.argv[1])
-          s = p.read_text()
-          marker = 'include(CheckCSourceRuns)'
-          start = s.index(marker)
+          p = Path(sys.argv[1]); s = p.read_text()
+          start = s.index('include(CheckCSourceRuns)')
           probe_start = s.index('check_c_source_runs(', start)
           needle = 'ALLOWS_ONESHOT_TIMERS_WITH_TIMEOUT_ZERO)'
           probe_end = s.index(needle, probe_start) + len(needle)
           probe = s[probe_start:probe_end]
-          replacement = 'if(CMAKE_SYSTEM_NAME STREQUAL "iOS")\n'
-          replacement += '  set(ALLOWS_ONESHOT_TIMERS_WITH_TIMEOUT_ZERO FALSE CACHE BOOL "iOS cross-compile result" FORCE)\n'
-          replacement += 'else()\n' + probe + '\nendif()'
+          replacement = 'if(CMAKE_SYSTEM_NAME STREQUAL "iOS")\n  set(ALLOWS_ONESHOT_TIMERS_WITH_TIMEOUT_ZERO FALSE CACHE BOOL "iOS cross-compile result" FORCE)\nelse()\n' + probe + '\nendif()'
           p.write_text(s[:probe_start] + replacement + s[probe_end:])
           PY
 
           python3 - "$ENGINE_ROOT" <<'PY'
           import sys
           from pathlib import Path
-          root = Path(sys.argv[1])
-          patched = 0
+          root = Path(sys.argv[1]); patched = 0
           for p in root.rglob('ImGuiFileDialog.cpp'):
               s = p.read_text(errors='ignore')
-              if 'std::system(' not in s:
-                  continue
+              if 'std::system(' not in s: continue
               s = s.replace('std::system(', 'MaxPS4IOSSystemUnavailable(')
               helper = '\nstatic int MaxPS4IOSSystemUnavailable(const char*) { return -1; }\n'
-              if 'static int MaxPS4IOSSystemUnavailable' not in s:
-                  s = helper + s
-              p.write_text(s)
-              patched += 1
-          if not patched:
-              raise SystemExit('ImGuiFileDialog.cpp std::system call not found')
+              if 'static int MaxPS4IOSSystemUnavailable' not in s: s = helper + s
+              p.write_text(s); patched += 1
+          if not patched: raise SystemExit('ImGuiFileDialog.cpp std::system call not found')
           PY
 
           python3 - "$ENGINE_ROOT/src/core/signals.cpp" <<'PY'
           import sys
           from pathlib import Path
-          p = Path(sys.argv[1])
-          s = p.read_text()
+          p = Path(sys.argv[1]); s = p.read_text()
           inc = '#include "core/ios/ios_jit_allocator.h"'
           guarded = '#ifdef SHADPS4_ENABLE_FEX_GUEST_CPU\n#include "common/singleton.h"'
-          if guarded not in s:
-              raise SystemExit('signals.cpp include layout changed; review required')
-          if not s.startswith(inc + '\n'):
-              s = inc + '\n' + s
+          if guarded not in s: raise SystemExit('signals.cpp include layout changed; review required')
+          if not s.startswith(inc + '\n'): s = inc + '\n' + s
           p.write_text(s)
           PY
 
+          # The bundled FFmpeg prebuilt selected by APPLE is macOS, not iOS.
+          # shadps4_ios already compiles src/platform/ios/ffmpeg_stub.cpp specifically
+          # for this case, so keep the macOS FFmpeg archives out of the Xcode link.
           python3 - "$ENGINE_ROOT/generate_project.rb" <<'PY'
           import sys
           from pathlib import Path
-          p = Path(sys.argv[1])
-          s = p.read_text()
-          old = "project.new_target(:application, project_name, :ios, '26.0')"
-          new = "project.new_target(:application, project_name, :ios, '18.0')"
-          if old not in s:
-              raise SystemExit('generate_project.rb deployment target layout changed')
-          p.write_text(s.replace(old, new, 1))
+          p = Path(sys.argv[1]); s = p.read_text()
+          old_target = "project.new_target(:application, project_name, :ios, '26.0')"
+          new_target = "project.new_target(:application, project_name, :ios, '18.0')"
+          if old_target not in s: raise SystemExit('generate_project.rb deployment target layout changed')
+          s = s.replace(old_target, new_target, 1)
+          marker = "  next if lib.include?('CMakeFiles')\n"
+          replacement = marker + "  next if lib.include?('ffmpeg-')\n"
+          if marker not in s: raise SystemExit('generate_project.rb library filter layout changed')
+          s = s.replace(marker, replacement, 1)
+          p.write_text(s)
           PY
 
           echo "ENGINE_ROOT=$ENGINE_ROOT" >> "$GITHUB_ENV"
@@ -107,9 +101,7 @@ jobs:
           set +e
           bash "$GITHUB_WORKSPACE/scripts/audit-ios-port.sh" "$ENGINE_ROOT"
           STATUS=$?
-          if [ "$STATUS" -ne 0 ]; then
-            echo "::warning::iOS compatibility audit exited with status $STATUS; build will continue."
-          fi
+          if [ "$STATUS" -ne 0 ]; then echo "::warning::iOS compatibility audit exited with status $STATUS; build will continue."; fi
           exit 0
 
       - name: Build native ImGui font embed tool
@@ -141,14 +133,9 @@ jobs:
             -DENABLE_UPDATER=OFF \
             -DENABLE_DISCORD_RPC=OFF \
             -DENABLE_SYSTEM_VULKAN=ON \
-            -DHWINFO_BATTERY=OFF \
-            -DHWINFO_DISK=OFF \
-            -DHWINFO_GPU=OFF \
-            -DHWINFO_MAINBOARD=OFF \
-            -DHWINFO_NETWORK=OFF \
+            -DHWINFO_BATTERY=OFF -DHWINFO_DISK=OFF -DHWINFO_GPU=OFF -DHWINFO_MAINBOARD=OFF -DHWINFO_NETWORK=OFF \
             -DIMGUI_FONT_EMBED_EXECUTABLE="$IMGUI_FONT_EMBED_EXECUTABLE" \
-            -DProtobuf_PROTOC_EXECUTABLE="$NATIVE_PROTOC" \
-            -DPROTOBUF_PROTOC_EXECUTABLE="$NATIVE_PROTOC"
+            -DProtobuf_PROTOC_EXECUTABLE="$NATIVE_PROTOC" -DPROTOBUF_PROTOC_EXECUTABLE="$NATIVE_PROTOC"
           echo "ENGINE_BUILD=$BUILD" >> "$GITHUB_ENV"
 
       - name: Force native protoc for cross compile
@@ -158,16 +145,13 @@ jobs:
           python3 - "$ENGINE_BUILD" "$NATIVE_PROTOC" <<'PY'
           import sys
           from pathlib import Path
-          root = Path(sys.argv[1]); protoc = sys.argv[2]
-          n = 0
+          root = Path(sys.argv[1]); protoc = sys.argv[2]; n = 0
           for p in root.rglob('*'):
               if not p.is_file(): continue
               try: s = p.read_text()
               except (UnicodeDecodeError, OSError): continue
               if 'protobuf::protoc' in s:
-                  c = s.count('protobuf::protoc')
-                  p.write_text(s.replace('protobuf::protoc', protoc))
-                  n += c
+                  c = s.count('protobuf::protoc'); p.write_text(s.replace('protobuf::protoc', protoc)); n += c
           print('native protoc replacements:', n)
           PY
           ! grep -R -q 'protobuf::protoc' "$ENGINE_BUILD"
@@ -196,11 +180,13 @@ jobs:
         run: |
           set -euxo pipefail
           cd "$ENGINE_ROOT"
-          if ! command -v xcodeproj >/dev/null 2>&1; then
-            sudo gem install xcodeproj --no-document
-          fi
+          if ! command -v xcodeproj >/dev/null 2>&1; then sudo gem install xcodeproj --no-document; fi
           ruby generate_project.rb
           test -d AetherPS4-iOS/AetherPS4-iOS.xcodeproj
+          if grep -R -q 'ffmpeg-.*libav.*\.a' AetherPS4-iOS/AetherPS4-iOS.xcodeproj/project.pbxproj; then
+            echo 'ERROR: macOS FFmpeg archive leaked into iOS Xcode project'
+            exit 1
+          fi
 
       - name: Build unsigned MaxPS4 application
         id: xcode_build
