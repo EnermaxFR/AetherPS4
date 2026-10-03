@@ -51,9 +51,25 @@ jobs:
           replacement += 'else()\n' + probe + '\nendif()'
           s = s[:probe_start] + replacement + s[probe_end:]
           p.write_text(s)
-          print('Patched only epoll-shim runtime probe; library targets remain enabled')
           PY
-          grep -n -A8 -B2 'ALLOWS_ONESHOT_TIMERS_WITH_TIMEOUT_ZERO' "$ENGINE_ROOT/externals/epoll-shim/src/CMakeLists.txt"
+          # ImGuiFileDialog uses std::system(), unavailable on physical iOS.
+          # Keep the desktop implementation out of the iOS build.
+          python3 - "$ENGINE_ROOT" <<'PY'
+          import sys
+          from pathlib import Path
+          root = Path(sys.argv[1])
+          patched = 0
+          for p in root.rglob('ImGuiFileDialog.cpp'):
+              s = p.read_text(errors='ignore')
+              if 'std::system(' not in s:
+                  continue
+              s = s.replace('std::system(', '/* iOS: shell execution unavailable */ (void)sizeof(')
+              p.write_text(s)
+              patched += 1
+              print('patched std::system for iOS:', p)
+          if not patched:
+              raise SystemExit('ImGuiFileDialog.cpp std::system call not found')
+          PY
           echo "ENGINE_ROOT=$ENGINE_ROOT" >> "$GITHUB_ENV"
 
       - name: Build native ImGui font embed tool
@@ -107,7 +123,6 @@ jobs:
                   c = s.count('protobuf::protoc')
                   p.write_text(s.replace('protobuf::protoc', protoc))
                   n += c
-                  print('patched', p)
           print('native protoc replacements:', n)
           PY
           ! grep -R -q 'protobuf::protoc' "$ENGINE_BUILD"
@@ -148,17 +163,7 @@ jobs:
         run: |
           set -euxo pipefail
           cd "$ENGINE_ROOT/AetherPS4-iOS"
-          xcodebuild \
-            -project AetherPS4-iOS.xcodeproj \
-            -scheme AetherPS4-iOS \
-            -configuration Release \
-            -sdk iphoneos \
-            -destination 'generic/platform=iOS' \
-            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY='' \
-            build
+          xcodebuild -project AetherPS4-iOS.xcodeproj -scheme AetherPS4-iOS -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath "$RUNNER_TEMP/DerivedData" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' build
 
       - name: Validate emulator core
         shell: bash
