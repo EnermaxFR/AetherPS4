@@ -64,15 +64,12 @@ jobs:
               if 'std::system(' not in s:
                   continue
               s = s.replace('std::system(', 'MaxPS4IOSSystemUnavailable(')
-              lines = s.splitlines(True)
-              insert_at = 0
-              for i, line in enumerate(lines):
-                  if line.lstrip().startswith('#include'):
-                      insert_at = i + 1
               helper = '\nstatic int MaxPS4IOSSystemUnavailable(const char*) { return -1; }\n'
               if 'static int MaxPS4IOSSystemUnavailable' not in s:
-                  lines.insert(insert_at, helper)
-                  s = ''.join(lines)
+                  # Declare the helper before every possible call site. It has no
+                  # platform-specific dependencies; this source patch is applied
+                  # only while building the iOS engine.
+                  s = helper + s
               p.write_text(s)
               patched += 1
               print('patched std::system for iOS:', p)
