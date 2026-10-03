@@ -35,6 +35,17 @@ jobs:
           echo "SOURCE_ROOT=$SOURCE_ROOT" >> "$GITHUB_ENV"
           echo "SCHEME=$SCHEME" >> "$GITHUB_ENV"
 
+      - name: Prepare LLVM toolchain
+        shell: bash
+        run: |
+          set -euxo pipefail
+          brew install llvm || brew upgrade llvm || true
+          LLVM_PREFIX=$(brew --prefix llvm)
+          test -x "$LLVM_PREFIX/bin/llvm-config"
+          echo "$LLVM_PREFIX/bin" >> "$GITHUB_PATH"
+          echo "LLVM_CONFIG=$LLVM_PREFIX/bin/llvm-config" >> "$GITHUB_ENV"
+          "$LLVM_PREFIX/bin/llvm-config" --version
+
       - name: Restore real shadPS4 CMake project
         shell: bash
         run: |
@@ -88,6 +99,7 @@ jobs:
             -DCMAKE_OSX_SYSROOT=iphoneos \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=18.0 \
+            -DKK_LLVM_CONFIG="$LLVM_CONFIG" \
             -DALLOWS_ONESHOT_TIMERS_WITH_TIMEOUT_ZERO_EXITCODE=1 \
             -DENABLE_TESTS=OFF \
             -DENABLE_UPDATER=OFF \
