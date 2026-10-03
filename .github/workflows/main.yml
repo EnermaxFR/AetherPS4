@@ -37,6 +37,7 @@ jobs:
 
           # MaxPS4 UI/branding overlay. Keep upstream emulator implementation intact.
           cp "$GITHUB_WORKSPACE/patches/MaxPS4ContentView.swift" "$ENGINE_ROOT/AetherPS4-iOS/Sources/Views/ContentView.swift"
+          cp "$GITHUB_WORKSPACE/patches/MaxPS4LibraryView.swift" "$ENGINE_ROOT/AetherPS4-iOS/Sources/Views/LibraryView.swift"
           /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName MaxPS4" "$ENGINE_ROOT/AetherPS4-iOS/Info.plist" || /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string MaxPS4" "$ENGINE_ROOT/AetherPS4-iOS/Info.plist"
           /usr/libexec/PlistBuddy -c "Set :CFBundleName MaxPS4" "$ENGINE_ROOT/AetherPS4-iOS/Info.plist" || /usr/libexec/PlistBuddy -c "Add :CFBundleName string MaxPS4" "$ENGINE_ROOT/AetherPS4-iOS/Info.plist"
 
