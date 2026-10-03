@@ -21,6 +21,98 @@ scan(){
   fi
 }
 
+# Patch the iOS loading overlay with lightweight diagnostics. The upstream
+# progress bar is intentionally synthetic when console logging is disabled:
+# it approaches 90% asymptotically, which makes the UI appear permanently
+# stuck at 89%. Keep that estimate, but expose the latest boot stage and make
+# it explicit that 89% is not a real engine completion percentage.
+OVERLAY="$ROOT/AetherPS4-iOS/Sources/LoadingOverlayWindow.swift"
+if [[ -f "$OVERLAY" ]]; then
+python3 - "$OVERLAY" <<'PY'
+import sys
+from pathlib import Path
+p = Path(sys.argv[1])
+s = p.read_text()
+
+needle = '    @Published var syntheticProgress: Double = 0\n'
+replacement = needle + '    @Published var diagnosticStage: String = "Starting emulator…"\n'
+if 'diagnosticStage:' not in s:
+    if needle not in s: raise SystemExit('LoadingOverlay syntheticProgress layout changed')
+    s = s.replace(needle, replacement, 1)
+
+old = '''            if self.consoleLoggingEnabled {
+                self.refreshLog()
+            } else {
+                self.syntheticTick()
+            }
+'''
+new = '''            if self.consoleLoggingEnabled {
+                self.refreshLog()
+            } else {
+                self.syntheticTick()
+                self.refreshDiagnosticStage()
+            }
+'''
+if 'self.refreshDiagnosticStage()' not in s:
+    if old not in s: raise SystemExit('LoadingOverlay timer layout changed')
+    s = s.replace(old, new, 1)
+
+anchor = '''    private func refreshLog() {
+'''
+method = '''    private func refreshDiagnosticStage() {
+        guard let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        let logURL = documentsURL.appendingPathComponent("aether_crash.log")
+        guard let handle = try? FileHandle(forReadingFrom: logURL) else {
+            diagnosticStage = "Waiting for emulator log…"
+            return
+        }
+        defer { try? handle.close() }
+        let fileSize = (try? handle.seekToEnd()) ?? 0
+        let maxBytes: UInt64 = 8 * 1024
+        let start = fileSize > maxBytes ? fileSize - maxBytes : 0
+        try? handle.seek(toOffset: start)
+        guard let data = try? handle.readToEnd() else { return }
+        let text = String(decoding: data, as: UTF8.self)
+        let stages: [(String, String)] = [
+            ("At the Title Screen", "Title screen reached — waiting for first rendered frame"),
+            ("FRAME_SLOT_ACQUIRE", "Renderer active — acquiring frame slot"),
+            ("GET_RENDER_FRAME_WAIT", "Renderer active — waiting for game frame"),
+            ("InitHLELibs: Initializing HLE libraries", "Initializing PS4 HLE libraries"),
+            ("TryOpenSDLControllers", "Initializing controllers"),
+            ("SDL Vulkan window creation returned", "Vulkan window created — initializing renderer"),
+            ("Creating SDL Vulkan window", "Creating Vulkan rendering window"),
+            ("SDL video subsystem initialized", "SDL video initialized")
+        ]
+        for (marker, label) in stages where text.contains(marker) {
+            diagnosticStage = label
+            return
+        }
+        if !text.isEmpty { diagnosticStage = "Emulator running — waiting for a known boot milestone" }
+    }
+
+'''
+if 'private func refreshDiagnosticStage()' not in s:
+    if anchor not in s: raise SystemExit('LoadingOverlay refreshLog layout changed')
+    s = s.replace(anchor, method + anchor, 1)
+
+percent = '''                    Text("\\(Int(progress * 100))%")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.white.opacity(0.6))
+'''
+percent_new = percent + '''                    Text(state.consoleLoggingEnabled ? "Boot milestone estimate" : state.diagnosticStage)
+                        .font(.system(size: 10, weight: .regular))
+                        .foregroundColor(.white.opacity(0.55))
+                        .lineLimit(2)
+'''
+if 'Boot milestone estimate' not in s:
+    if percent not in s: raise SystemExit('LoadingOverlay percentage UI layout changed')
+    s = s.replace(percent, percent_new, 1)
+
+p.write_text(s)
+print('Patched LoadingOverlayWindow.swift with lightweight boot diagnostics')
+PY
+fi
+
 # This audit is intentionally diagnostic-only. Potential compatibility issues
 # are reported as GitHub Actions warnings but never stop the iOS build. The
 # compiler/linker remains the authority for actual build failures.
