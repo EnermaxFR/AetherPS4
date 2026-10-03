@@ -1,4 +1,4 @@
-name: Build AetherPS4 iOS
+name: Build MaxPS4 iOS
 
 on:
   workflow_dispatch:
@@ -10,271 +10,138 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout MaxPS4
         uses: actions/checkout@v4
 
-      - name: Reconstruct AetherPS4 source
+      - name: Prepare build tools
         shell: bash
         run: |
           set -euxo pipefail
-          cat AetherPS4-source.zip.part-* > "$RUNNER_TEMP/AetherPS4-source.zip"
-          mkdir -p extracted/source
-          unzip -q "$RUNNER_TEMP/AetherPS4-source.zip" -d extracted/source
-
-      - name: Select iOS project
-        shell: bash
-        run: |
-          set -euo pipefail
-          PROJECT=$(find extracted/source -name 'AetherPS4-iOS.xcodeproj' -print -quit)
-          test -n "$PROJECT" || { echo 'ERROR: AetherPS4-iOS.xcodeproj not found'; exit 1; }
-          APP_ROOT=$(dirname "$PROJECT")
-          SOURCE_ROOT="$GITHUB_WORKSPACE/extracted/source"
-          SCHEME=$(xcodebuild -project "$PROJECT" -list -json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["project"]["schemes"][0])')
-          echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
-          echo "APP_ROOT=$APP_ROOT" >> "$GITHUB_ENV"
-          echo "SOURCE_ROOT=$SOURCE_ROOT" >> "$GITHUB_ENV"
-          echo "SCHEME=$SCHEME" >> "$GITHUB_ENV"
-
-      - name: Prepare LLVM, Ninja and Protobuf toolchain
-        shell: bash
-        run: |
-          set -euxo pipefail
-          brew install llvm ninja protobuf || true
-          LLVM_PREFIX=$(brew --prefix llvm)
-          PROTOC=$(brew --prefix protobuf)/bin/protoc
-          test -x "$LLVM_PREFIX/bin/llvm-config"
+          brew install ninja protobuf || true
+          PROTOC="$(brew --prefix protobuf)/bin/protoc"
           test -x "$PROTOC"
-          command -v ninja
-          echo "$LLVM_PREFIX/bin" >> "$GITHUB_PATH"
-          echo "$(dirname "$PROTOC")" >> "$GITHUB_PATH"
-          echo "LLVM_CONFIG=$LLVM_PREFIX/bin/llvm-config" >> "$GITHUB_ENV"
           echo "NATIVE_PROTOC=$PROTOC" >> "$GITHUB_ENV"
-          "$LLVM_PREFIX/bin/llvm-config" --version
-          "$PROTOC" --version
-          ninja --version
+          echo "$(dirname "$PROTOC")" >> "$GITHUB_PATH"
 
-      - name: Restore real shadPS4 CMake project
+      - name: Restore matching AetherPS4 iOS source tree
         shell: bash
         run: |
           set -euxo pipefail
-          ENGINE_ROOT="$RUNNER_TEMP/shadPS4-engine"
-          git clone --depth 1 --recursive --shallow-submodules https://github.com/shadps4-emu/shadPS4.git "$ENGINE_ROOT"
-          rsync -a "$SOURCE_ROOT/src/" "$ENGINE_ROOT/src/"
-          test -f "$ENGINE_ROOT/CMakeLists.txt"
-          grep -q 'cmake_minimum_required' "$ENGINE_ROOT/CMakeLists.txt"
-          grep -q 'project(shadPS4' "$ENGINE_ROOT/CMakeLists.txt"
+          ENGINE_ROOT="$RUNNER_TEMP/aetherps4-ios-engine"
+          git clone --recursive https://github.com/Leviidev/AetherPS4.git "$ENGINE_ROOT"
+          git -C "$ENGINE_ROOT" checkout 3347fc13f19860855ce91b66356940989ea6b6a6
+          git -C "$ENGINE_ROOT" submodule update --init --recursive
           test -f "$ENGINE_ROOT/src/platform/ios/shadps4_ios_api.cpp"
-          test -f "$ENGINE_ROOT/src/platform/ios/shadps4_ios_api.h"
+          test -f "$ENGINE_ROOT/runtime/sources/fexcore-darwin/CMakeLists.txt"
+          test -d "$ENGINE_ROOT/AetherPS4-iOS"
+          grep -q 'ENABLE_SHADPS4_IOS_LIB' "$ENGINE_ROOT/CMakeLists.txt"
           echo "ENGINE_ROOT=$ENGINE_ROOT" >> "$GITHUB_ENV"
-
-      - name: Patch ImGuiFileDialog for iOS
-        shell: bash
-        run: |
-          set -euxo pipefail
-          IFD_CPP=$(find "$ENGINE_ROOT" -type f -name 'ImGuiFileDialog.cpp' -print -quit)
-          test -n "$IFD_CPP" || { echo 'ERROR: ImGuiFileDialog.cpp not found'; exit 1; }
-          python3 - "$IFD_CPP" <<'PY'
-          import sys
-          from pathlib import Path
-          p = Path(sys.argv[1])
-          s = p.read_text()
-          s = s.replace('std::system(', 'aether_ios_system(')
-          marker = '#include'
-          pos = s.find('\n', s.find(marker))
-          shim = '''\n#if defined(__APPLE__)\n#include <TargetConditionals.h>\n#endif\n#if defined(__APPLE__) && TARGET_OS_IPHONE\nstatic inline int aether_ios_system(const char*) { return -1; }\n#else\nstatic inline int aether_ios_system(const char* command) { return std::system(command); }\n#endif\n'''
-          s = s[:pos+1] + shim + s[pos+1:]
-          p.write_text(s)
-          PY
-
-      - name: Patch macOS-only dependencies for iOS
-        shell: bash
-        run: |
-          set -euxo pipefail
-          python3 - "$ENGINE_ROOT" <<'PY'
-          import sys
-          from pathlib import Path
-          root = Path(sys.argv[1])
-          hwinfo = list(root.rglob('hwinfo/src/apple'))
-          disabled_hwinfo = []
-          for d in hwinfo:
-              if not d.is_dir(): continue
-              for p in d.iterdir():
-                  if not p.is_file() or p.suffix.lower() not in {'.c','.cc','.cpp','.cxx','.m','.mm'}: continue
-                  try: s = p.read_text()
-                  except (UnicodeDecodeError, OSError): continue
-                  guard = '#include <TargetConditionals.h>\n#if !TARGET_OS_IPHONE\n'
-                  if not s.startswith(guard): p.write_text(guard + s + '\n#endif\n')
-                  disabled_hwinfo.append(str(p))
-          print('Disabled hwinfo Apple backend files:')
-          print('\n'.join(disabled_hwinfo) if disabled_hwinfo else '(none found)')
-          unavailable = ('IOKit/IOCFBundle.h','IOKit/ps/IOPSKeys.h','IOKit/IOBSD.h','kIOMasterPortDefault')
-          disabled = []
-          for p in root.rglob('*'):
-              if not p.is_file() or p.suffix.lower() not in {'.c','.cc','.cpp','.cxx','.m','.mm'}: continue
-              try: s = p.read_text()
-              except (UnicodeDecodeError, OSError): continue
-              if not any(token in s for token in unavailable): continue
-              guard = '#include <TargetConditionals.h>\n#if !TARGET_OS_IPHONE\n'
-              if not s.startswith(guard): p.write_text(guard + s + '\n#endif\n')
-              disabled.append(str(p))
-          print('Other iOS-disabled Apple translation units:')
-          print('\n'.join(disabled))
-          PY
 
       - name: Build native ImGui font embed tool
         shell: bash
         run: |
           set -euxo pipefail
-          FONT_EMBED_SRC=$(find "$ENGINE_ROOT/externals" -type f -path '*/misc/fonts/binary_to_compressed_c.cpp' -print -quit)
-          test -n "$FONT_EMBED_SRC" || { echo 'ERROR: Dear ImGui binary_to_compressed_c.cpp not found'; exit 1; }
-          FONT_EMBED_EXE="$RUNNER_TEMP/Dear_ImGui_FontEmbed"
-          xcrun --sdk macosx clang++ -O2 -std=c++17 "$FONT_EMBED_SRC" -o "$FONT_EMBED_EXE"
-          test -x "$FONT_EMBED_EXE"
-          file "$FONT_EMBED_EXE"
-          echo "IMGUI_FONT_EMBED_EXECUTABLE=$FONT_EMBED_EXE" >> "$GITHUB_ENV"
+          SRC="$ENGINE_ROOT/externals/dear_imgui/misc/fonts/binary_to_compressed_c.cpp"
+          test -f "$SRC"
+          OUT="$RUNNER_TEMP/Dear_ImGui_FontEmbed"
+          xcrun --sdk macosx clang++ -O2 -std=c++17 "$SRC" -o "$OUT"
+          test -x "$OUT"
+          echo "IMGUI_FONT_EMBED_EXECUTABLE=$OUT" >> "$GITHUB_ENV"
 
-      - name: Add embeddable iOS engine target
+      - name: Configure matching iOS engine
         shell: bash
         run: |
           set -euxo pipefail
-          cat >> "$ENGINE_ROOT/CMakeLists.txt" <<'CMAKE'
-
-          if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
-            get_target_property(AETHER_SHAD_SOURCES shadps4 SOURCES)
-            list(FILTER AETHER_SHAD_SOURCES EXCLUDE REGEX "(^|/)main\\.cpp$")
-            list(APPEND AETHER_SHAD_SOURCES src/platform/ios/shadps4_ios_api.cpp)
-            add_library(shadps4_ios STATIC ${AETHER_SHAD_SOURCES})
-            get_target_property(AETHER_SHAD_LINK shadps4 LINK_LIBRARIES)
-            if(AETHER_SHAD_LINK)
-              target_link_libraries(shadps4_ios PRIVATE ${AETHER_SHAD_LINK})
-            endif()
-            get_target_property(AETHER_SHAD_INCLUDES shadps4 INCLUDE_DIRECTORIES)
-            if(AETHER_SHAD_INCLUDES)
-              target_include_directories(shadps4_ios PRIVATE ${AETHER_SHAD_INCLUDES})
-            endif()
-            get_target_property(AETHER_SHAD_DEFS shadps4 COMPILE_DEFINITIONS)
-            if(AETHER_SHAD_DEFS)
-              target_compile_definitions(shadps4_ios PRIVATE ${AETHER_SHAD_DEFS})
-            endif()
-            target_compile_definitions(shadps4_ios PRIVATE SHADPS4_LIBRARY_BUILD=1)
-            target_include_directories(shadps4_ios PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/ios)
-          endif()
-          CMAKE
-
-      - name: Configure shadPS4 iOS engine
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cmake -S "$ENGINE_ROOT" -B "$RUNNER_TEMP/shadps4-ios" \
-            -G Ninja \
+          BUILD="$ENGINE_ROOT/runtime/build/shadps4-ios"
+          rm -rf "$BUILD"
+          cmake -S "$ENGINE_ROOT" -B "$BUILD" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_SYSTEM_NAME=iOS \
             -DCMAKE_SYSTEM_PROCESSOR=arm64 \
             -DCMAKE_OSX_SYSROOT=iphoneos \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=18.0 \
-            -DKK_LLVM_CONFIG="$LLVM_CONFIG" \
-            -DIMGUI_FONT_EMBED_EXECUTABLE="$IMGUI_FONT_EMBED_EXECUTABLE" \
-            -DProtobuf_PROTOC_EXECUTABLE="$NATIVE_PROTOC" \
-            -DPROTOBUF_PROTOC_EXECUTABLE="$NATIVE_PROTOC" \
-            -DALLOWS_ONESHOT_TIMERS_WITH_TIMEOUT_ZERO_EXITCODE=1 \
+            -DENABLE_SHADPS4_IOS_LIB=ON \
             -DENABLE_TESTS=OFF \
             -DENABLE_UPDATER=OFF \
             -DENABLE_DISCORD_RPC=OFF \
-            -DBUILD_SHARED_LIBS=OFF
+            -DENABLE_SYSTEM_VULKAN=ON \
+            -DIMGUI_FONT_EMBED_EXECUTABLE="$IMGUI_FONT_EMBED_EXECUTABLE" \
+            -DProtobuf_PROTOC_EXECUTABLE="$NATIVE_PROTOC" \
+            -DPROTOBUF_PROTOC_EXECUTABLE="$NATIVE_PROTOC"
+          echo "ENGINE_BUILD=$BUILD" >> "$GITHUB_ENV"
 
-      - name: Force native protoc in generated Ninja rules
+      - name: Force native protoc for cross compile
         shell: bash
         run: |
           set -euxo pipefail
-          test -x "$NATIVE_PROTOC"
-          python3 - "$RUNNER_TEMP/shadps4-ios" "$NATIVE_PROTOC" <<'PY'
+          python3 - "$ENGINE_BUILD" "$NATIVE_PROTOC" <<'PY'
           import sys
           from pathlib import Path
-          root = Path(sys.argv[1])
-          protoc = sys.argv[2]
-          replacements = 0
+          root = Path(sys.argv[1]); protoc = sys.argv[2]
+          n = 0
           for p in root.rglob('*'):
-              if not p.is_file():
-                  continue
-              try:
-                  s = p.read_text()
-              except (UnicodeDecodeError, OSError):
-                  continue
-              if 'protobuf::protoc' not in s:
-                  continue
-              new = s.replace('protobuf::protoc', protoc)
-              if new != s:
-                  p.write_text(new)
-                  replacements += s.count('protobuf::protoc')
-                  print(f'Patched protoc rule: {p}')
-          print(f'Replaced {replacements} protobuf::protoc reference(s) with {protoc}')
+              if not p.is_file(): continue
+              try: s = p.read_text()
+              except (UnicodeDecodeError, OSError): continue
+              if 'protobuf::protoc' in s:
+                  c = s.count('protobuf::protoc')
+                  p.write_text(s.replace('protobuf::protoc', protoc))
+                  n += c
+                  print('patched', p)
+          print('native protoc replacements:', n)
           PY
-          if grep -R -q 'protobuf::protoc' "$RUNNER_TEMP/shadps4-ios"; then
-            echo 'ERROR: generated build still contains protobuf::protoc'
-            exit 1
-          fi
+          ! grep -R -q 'protobuf::protoc' "$ENGINE_BUILD"
 
-      - name: Build shadPS4 iOS engine
+      - name: Build matching shadps4_ios library
         shell: bash
         run: |
           set -uo pipefail
-          BUILD_LOG="$RUNNER_TEMP/shadps4-ios-build.log"
+          LOG="$RUNNER_TEMP/maxps4-engine.log"
           set +e
-          cmake --build "$RUNNER_TEMP/shadps4-ios" --target shadps4_ios -- -v 2>&1 | tee "$BUILD_LOG"
+          cmake --build "$ENGINE_BUILD" --target shadps4_ios -- -v 2>&1 | tee "$LOG"
           STATUS=${PIPESTATUS[0]}
           set -e
           if [ "$STATUS" -ne 0 ]; then
             echo '================ EXACT BUILD FAILURE ================'
-            grep -n -E '(^|: )(error:|fatal error:)|FAILED:|ninja: build stopped|undefined symbol|Undefined symbols|command not found|protoc' "$BUILD_LOG" | tail -120 || true
-            echo '================ LAST 160 LINES ====================='
-            tail -160 "$BUILD_LOG" || true
+            grep -n -E '(^|: )(error:|fatal error:)|FAILED:|ninja: build stopped|undefined symbol|Undefined symbols|command not found|protoc' "$LOG" | tail -160 || true
+            echo '================ LAST 200 LINES ====================='
+            tail -200 "$LOG" || true
             exit "$STATUS"
           fi
-          ENGINE_LIB=$(find "$RUNNER_TEMP/shadps4-ios" -type f -name 'libshadps4_ios.a' -print -quit)
-          test -n "$ENGINE_LIB" || { echo 'ERROR: libshadps4_ios.a was not produced'; exit 1; }
-          echo "ENGINE_LIB=$ENGINE_LIB" >> "$GITHUB_ENV"
-          find "$RUNNER_TEMP/shadps4-ios" -type f -name '*.a' -print | sort
+          LIB=$(find "$ENGINE_BUILD" -type f -name 'libshadps4_ios.a' -print -quit)
+          test -n "$LIB"
+          ls -lh "$LIB"
 
-      - name: Patch Xcode absolute paths
+      - name: Regenerate iOS project with matching libraries
         shell: bash
         run: |
           set -euxo pipefail
-          PBXPROJ="$PROJECT/project.pbxproj"
-          python3 - "$PBXPROJ" "$ENGINE_ROOT" "$RUNNER_TEMP/shadps4-ios" <<'PY'
-          import sys
-          from pathlib import Path
-          p = Path(sys.argv[1])
-          engine = sys.argv[2]
-          build = sys.argv[3]
-          text = p.read_text()
-          old = "/Users/davi/Documents/Coding/AetherCore4/aetherps4-public-release"
-          text = text.replace(old + "/build/shadps4-ios", build)
-          text = text.replace(old, engine)
-          p.write_text(text)
-          PY
+          cd "$ENGINE_ROOT"
+          if ! command -v xcodeproj >/dev/null 2>&1; then
+            sudo gem install xcodeproj --no-document
+          fi
+          ruby generate_project.rb
+          test -d AetherPS4-iOS/AetherPS4-iOS.xcodeproj
 
-      - name: Build full iOS application
+      - name: Build unsigned MaxPS4 application
         shell: bash
         run: |
           set -euxo pipefail
-          LIB_DIRS=$(find "$RUNNER_TEMP/shadps4-ios" -type f -name '*.a' -exec dirname {} \; | sort -u | tr '\n' ' ')
+          cd "$ENGINE_ROOT/AetherPS4-iOS"
           xcodebuild \
-            -project "$PROJECT" \
-            -scheme "$SCHEME" \
+            -project AetherPS4-iOS.xcodeproj \
+            -scheme AetherPS4-iOS \
             -configuration Release \
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
-            HEADER_SEARCH_PATHS="$ENGINE_ROOT/src/platform/ios $ENGINE_ROOT/src/core/pkg_extract $ENGINE_ROOT/src/core/sysmodules_import $ENGINE_ROOT/src/core/user_profile_bridge" \
-            LIBRARY_SEARCH_PATHS="$LIB_DIRS" \
-            FRAMEWORK_SEARCH_PATHS="$APP_ROOT/Frameworks" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY='' \
             build
 
-      - name: Validate generated application
+      - name: Validate emulator core
         shell: bash
         run: |
           set -euxo pipefail
@@ -282,26 +149,27 @@ jobs:
           test -n "$APP"
           EXENAME=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Info.plist")
           EXE="$APP/$EXENAME"
-          ls -lh "$EXE"
           file "$EXE"
+          ls -lh "$EXE"
           nm "$EXE" 2>/dev/null | grep -E 'shadps4_(init|run|prepare_window)' | head -20
           SIZE=$(stat -f%z "$EXE")
           test "$SIZE" -ge 500000 || { echo "ERROR: emulator core is not linked ($SIZE bytes)"; exit 1; }
           echo "APP=$APP" >> "$GITHUB_ENV"
 
-      - name: Create unsigned IPA
+      - name: Create unsigned MaxPS4 IPA
         shell: bash
         run: |
           set -euxo pipefail
           rm -rf "$RUNNER_TEMP/Payload"
           mkdir -p "$RUNNER_TEMP/Payload"
-          cp -R "$APP" "$RUNNER_TEMP/Payload/"
+          cp -R "$APP" "$RUNNER_TEMP/Payload/MaxPS4.app"
           cd "$RUNNER_TEMP"
-          zip -qr AetherPS4-with-emulator-unsigned.ipa Payload
+          zip -qr MaxPS4-with-emulator-unsigned.ipa Payload
+          ls -lh MaxPS4-with-emulator-unsigned.ipa
 
-      - name: Upload IPA
+      - name: Upload MaxPS4 IPA
         uses: actions/upload-artifact@v4
         with:
-          name: AetherPS4-with-emulator
-          path: ${{ runner.temp }}/AetherPS4-with-emulator-unsigned.ipa
+          name: MaxPS4-with-emulator
+          path: ${{ runner.temp }}/MaxPS4-with-emulator-unsigned.ipa
           if-no-files-found: error
