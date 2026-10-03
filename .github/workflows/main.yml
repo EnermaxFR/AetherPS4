@@ -85,25 +85,20 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          # libusb and hwinfo select macOS IOKit backends merely because __APPLE__
-          # is defined. Those APIs do not exist in the iPhoneOS SDK. Remove their
-          # macOS backend source files from the generated iOS build graph.
+          # Desktop Apple backends are selected by some dependencies whenever
+          # __APPLE__ is defined, but several IOKit APIs/headers are macOS-only.
           python3 - "$ENGINE_ROOT" <<'PY'
           import sys
           from pathlib import Path
           root = Path(sys.argv[1])
           cmakes = list(root.rglob('CMakeLists.txt'))
           changed = []
-          needles = ('darwin_usb.c', 'darwin_usb.h', 'darwin_usb.cpp',
-                     'battery_macos.cpp', 'battery_macos.mm', 'os_macos.cpp',
-                     'IOPSKeys', 'IOCFBundle')
           for p in cmakes:
               try:
                   s = p.read_text()
               except UnicodeDecodeError:
                   continue
               original = s
-              # Remove source-list lines that are unambiguously macOS-only.
               lines = []
               for line in s.splitlines(True):
                   low = line.lower()
@@ -118,12 +113,19 @@ jobs:
           print('Patched CMake files:')
           print('\n'.join(changed) if changed else '(none; source-level fallback will apply)')
           PY
-          # Source-level fallback: make files that include unavailable IOKit
-          # headers compile to an empty translation unit on iOS.
+          # Disable only translation units that directly depend on IOKit
+          # headers unavailable in the iPhoneOS SDK. This catches hwinfo's
+          # apple/disk.cpp (IOBSD.h) as well as the earlier power/CF backends.
           python3 - "$ENGINE_ROOT" <<'PY'
           import sys
           from pathlib import Path
           root = Path(sys.argv[1])
+          unavailable = (
+              'IOKit/IOCFBundle.h',
+              'IOKit/ps/IOPSKeys.h',
+              'IOKit/IOBSD.h',
+          )
+          disabled = []
           for p in root.rglob('*'):
               if not p.is_file() or p.suffix.lower() not in {'.c','.cc','.cpp','.cxx','.m','.mm'}:
                   continue
@@ -131,11 +133,17 @@ jobs:
                   s = p.read_text()
               except (UnicodeDecodeError, OSError):
                   continue
-              if 'IOKit/IOCFBundle.h' not in s and 'IOKit/ps/IOPSKeys.h' not in s:
+              if not any(header in s for header in unavailable):
+                  continue
+              if s.startswith('#include <TargetConditionals.h>\n#if !TARGET_OS_IPHONE\n'):
                   continue
               wrapped = '#include <TargetConditionals.h>\n#if !TARGET_OS_IPHONE\n' + s + '\n#endif\n'
               p.write_text(wrapped)
-              print('iOS-disabled:', p)
+              disabled.append(str(p))
+          print('iOS-disabled translation units:')
+          print('\n'.join(disabled))
+          if not any(p.endswith('/hwinfo/src/apple/disk.cpp') for p in disabled):
+              print('NOTE: hwinfo apple/disk.cpp did not require patching in this checkout')
           PY
 
       - name: Build native ImGui font embed tool
