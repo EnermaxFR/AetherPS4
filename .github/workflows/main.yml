@@ -53,8 +53,6 @@ jobs:
           p.write_text(s)
           PY
           # ImGuiFileDialog uses std::system(), which Apple marks unavailable on iOS.
-          # Replace only that call with a harmless local shim while keeping the rest
-          # of ImGuiFileDialog compiled (the engine references its symbols).
           python3 - "$ENGINE_ROOT" <<'PY'
           import sys
           from pathlib import Path
@@ -105,6 +103,11 @@ jobs:
             -DENABLE_UPDATER=OFF \
             -DENABLE_DISCORD_RPC=OFF \
             -DENABLE_SYSTEM_VULKAN=ON \
+            -DHWINFO_BATTERY=OFF \
+            -DHWINFO_DISK=OFF \
+            -DHWINFO_GPU=OFF \
+            -DHWINFO_MAINBOARD=OFF \
+            -DHWINFO_NETWORK=OFF \
             -DIMGUI_FONT_EMBED_EXECUTABLE="$IMGUI_FONT_EMBED_EXECUTABLE" \
             -DProtobuf_PROTOC_EXECUTABLE="$NATIVE_PROTOC" \
             -DPROTOBUF_PROTOC_EXECUTABLE="$NATIVE_PROTOC"
