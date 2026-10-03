@@ -35,17 +35,22 @@ jobs:
           echo "SOURCE_ROOT=$SOURCE_ROOT" >> "$GITHUB_ENV"
           echo "SCHEME=$SCHEME" >> "$GITHUB_ENV"
 
-      - name: Prepare LLVM and Ninja toolchain
+      - name: Prepare LLVM, Ninja and Protobuf toolchain
         shell: bash
         run: |
           set -euxo pipefail
-          brew install llvm ninja || true
+          brew install llvm ninja protobuf || true
           LLVM_PREFIX=$(brew --prefix llvm)
+          PROTOC=$(brew --prefix protobuf)/bin/protoc
           test -x "$LLVM_PREFIX/bin/llvm-config"
+          test -x "$PROTOC"
           command -v ninja
           echo "$LLVM_PREFIX/bin" >> "$GITHUB_PATH"
+          echo "$(dirname "$PROTOC")" >> "$GITHUB_PATH"
           echo "LLVM_CONFIG=$LLVM_PREFIX/bin/llvm-config" >> "$GITHUB_ENV"
+          echo "NATIVE_PROTOC=$PROTOC" >> "$GITHUB_ENV"
           "$LLVM_PREFIX/bin/llvm-config" --version
+          "$PROTOC" --version
           ninja --version
 
       - name: Restore real shadPS4 CMake project
@@ -89,51 +94,28 @@ jobs:
           import sys
           from pathlib import Path
           root = Path(sys.argv[1])
-
-          # Disable the complete hwinfo Apple desktop backend. Its sources use
-          # macOS-only IOKit APIs (including kIOMasterPortDefault) that cannot
-          # be compiled against the iPhoneOS SDK. The emulator does not need
-          # desktop host hardware inventory on iOS.
           hwinfo = list(root.rglob('hwinfo/src/apple'))
           disabled_hwinfo = []
           for d in hwinfo:
-              if not d.is_dir():
-                  continue
+              if not d.is_dir(): continue
               for p in d.iterdir():
-                  if not p.is_file() or p.suffix.lower() not in {'.c','.cc','.cpp','.cxx','.m','.mm'}:
-                      continue
-                  try:
-                      s = p.read_text()
-                  except (UnicodeDecodeError, OSError):
-                      continue
+                  if not p.is_file() or p.suffix.lower() not in {'.c','.cc','.cpp','.cxx','.m','.mm'}: continue
+                  try: s = p.read_text()
+                  except (UnicodeDecodeError, OSError): continue
                   guard = '#include <TargetConditionals.h>\n#if !TARGET_OS_IPHONE\n'
-                  if not s.startswith(guard):
-                      p.write_text(guard + s + '\n#endif\n')
+                  if not s.startswith(guard): p.write_text(guard + s + '\n#endif\n')
                   disabled_hwinfo.append(str(p))
           print('Disabled hwinfo Apple backend files:')
           print('\n'.join(disabled_hwinfo) if disabled_hwinfo else '(none found)')
-
-          # Catch other known desktop-only Apple translation units outside
-          # hwinfo while leaving iOS-compatible Apple code untouched.
-          unavailable = (
-              'IOKit/IOCFBundle.h',
-              'IOKit/ps/IOPSKeys.h',
-              'IOKit/IOBSD.h',
-              'kIOMasterPortDefault',
-          )
+          unavailable = ('IOKit/IOCFBundle.h','IOKit/ps/IOPSKeys.h','IOKit/IOBSD.h','kIOMasterPortDefault')
           disabled = []
           for p in root.rglob('*'):
-              if not p.is_file() or p.suffix.lower() not in {'.c','.cc','.cpp','.cxx','.m','.mm'}:
-                  continue
-              try:
-                  s = p.read_text()
-              except (UnicodeDecodeError, OSError):
-                  continue
-              if not any(token in s for token in unavailable):
-                  continue
+              if not p.is_file() or p.suffix.lower() not in {'.c','.cc','.cpp','.cxx','.m','.mm'}: continue
+              try: s = p.read_text()
+              except (UnicodeDecodeError, OSError): continue
+              if not any(token in s for token in unavailable): continue
               guard = '#include <TargetConditionals.h>\n#if !TARGET_OS_IPHONE\n'
-              if not s.startswith(guard):
-                  p.write_text(guard + s + '\n#endif\n')
+              if not s.startswith(guard): p.write_text(guard + s + '\n#endif\n')
               disabled.append(str(p))
           print('Other iOS-disabled Apple translation units:')
           print('\n'.join(disabled))
@@ -193,6 +175,8 @@ jobs:
             -DCMAKE_OSX_DEPLOYMENT_TARGET=18.0 \
             -DKK_LLVM_CONFIG="$LLVM_CONFIG" \
             -DIMGUI_FONT_EMBED_EXECUTABLE="$IMGUI_FONT_EMBED_EXECUTABLE" \
+            -DProtobuf_PROTOC_EXECUTABLE="$NATIVE_PROTOC" \
+            -DPROTOBUF_PROTOC_EXECUTABLE="$NATIVE_PROTOC" \
             -DALLOWS_ONESHOT_TIMERS_WITH_TIMEOUT_ZERO_EXITCODE=1 \
             -DENABLE_TESTS=OFF \
             -DENABLE_UPDATER=OFF \
