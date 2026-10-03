@@ -28,13 +28,13 @@ jobs:
         run: |
           set -euxo pipefail
           ENGINE_ROOT="$RUNNER_TEMP/aetherps4-ios-engine"
-          git clone --recursive https://github.com/Leviidev/AetherPS4.git "$ENGINE_ROOT"
-          git -C "$ENGINE_ROOT" checkout 3347fc13f19860855ce91b66356940989ea6b6a6
+          git clone https://github.com/Leviidev/AetherPS4.git "$ENGINE_ROOT"
+          git -C "$ENGINE_ROOT" checkout 74f94b61b213fbc231b59a3917cb404cbb25e098
           git -C "$ENGINE_ROOT" submodule update --init --recursive
           test -f "$ENGINE_ROOT/src/platform/ios/shadps4_ios_api.cpp"
-          test -f "$ENGINE_ROOT/runtime/sources/fexcore-darwin/CMakeLists.txt"
           test -d "$ENGINE_ROOT/AetherPS4-iOS"
           grep -q 'ENABLE_SHADPS4_IOS_LIB' "$ENGINE_ROOT/CMakeLists.txt"
+          grep -q 'add_library(shadps4_ios STATIC' "$ENGINE_ROOT/CMakeLists.txt"
           echo "ENGINE_ROOT=$ENGINE_ROOT" >> "$GITHUB_ENV"
 
       - name: Build native ImGui font embed tool
