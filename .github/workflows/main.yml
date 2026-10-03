@@ -46,11 +46,9 @@ jobs:
           needle = 'ALLOWS_ONESHOT_TIMERS_WITH_TIMEOUT_ZERO)'
           probe_end = s.index(needle, probe_start) + len(needle)
           probe = s[probe_start:probe_end]
-          replacement = '''if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
-  set(ALLOWS_ONESHOT_TIMERS_WITH_TIMEOUT_ZERO FALSE CACHE BOOL "iOS cross-compile result" FORCE)
-else()
-''' + probe + '''
-endif()'''
+          replacement = 'if(CMAKE_SYSTEM_NAME STREQUAL "iOS")\n'
+          replacement += '  set(ALLOWS_ONESHOT_TIMERS_WITH_TIMEOUT_ZERO FALSE CACHE BOOL "iOS cross-compile result" FORCE)\n'
+          replacement += 'else()\n' + probe + '\nendif()'
           s = s[:probe_start] + replacement + s[probe_end:]
           p.write_text(s)
           print('Patched only epoll-shim runtime probe; library targets remain enabled')
