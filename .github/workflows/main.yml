@@ -209,10 +209,7 @@ jobs:
                   replacements += s.count('protobuf::protoc')
                   print(f'Patched protoc rule: {p}')
           print(f'Replaced {replacements} protobuf::protoc reference(s) with {protoc}')
-          if replacements == 0:
-              print('No literal protobuf::protoc remained; checking generated shadnet rule...')
           PY
-          grep -R -n -E 'shadnet\.proto|shadnet\.pb\.cc' "$RUNNER_TEMP/shadps4-ios" | head -30 || true
           if grep -R -q 'protobuf::protoc' "$RUNNER_TEMP/shadps4-ios"; then
             echo 'ERROR: generated build still contains protobuf::protoc'
             exit 1
@@ -221,8 +218,19 @@ jobs:
       - name: Build shadPS4 iOS engine
         shell: bash
         run: |
-          set -euxo pipefail
-          cmake --build "$RUNNER_TEMP/shadps4-ios" --target shadps4_ios
+          set -uo pipefail
+          BUILD_LOG="$RUNNER_TEMP/shadps4-ios-build.log"
+          set +e
+          cmake --build "$RUNNER_TEMP/shadps4-ios" --target shadps4_ios -- -v 2>&1 | tee "$BUILD_LOG"
+          STATUS=${PIPESTATUS[0]}
+          set -e
+          if [ "$STATUS" -ne 0 ]; then
+            echo '================ EXACT BUILD FAILURE ================'
+            grep -n -E '(^|: )(error:|fatal error:)|FAILED:|ninja: build stopped|undefined symbol|Undefined symbols|command not found|protoc' "$BUILD_LOG" | tail -120 || true
+            echo '================ LAST 160 LINES ====================='
+            tail -160 "$BUILD_LOG" || true
+            exit "$STATUS"
+          fi
           ENGINE_LIB=$(find "$RUNNER_TEMP/shadps4-ios" -type f -name 'libshadps4_ios.a' -print -quit)
           test -n "$ENGINE_LIB" || { echo 'ERROR: libshadps4_ios.a was not produced'; exit 1; }
           echo "ENGINE_LIB=$ENGINE_LIB" >> "$GITHUB_ENV"
