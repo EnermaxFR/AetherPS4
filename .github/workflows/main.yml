@@ -183,6 +183,41 @@ jobs:
             -DENABLE_DISCORD_RPC=OFF \
             -DBUILD_SHARED_LIBS=OFF
 
+      - name: Force native protoc in generated Ninja rules
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test -x "$NATIVE_PROTOC"
+          python3 - "$RUNNER_TEMP/shadps4-ios" "$NATIVE_PROTOC" <<'PY'
+          import sys
+          from pathlib import Path
+          root = Path(sys.argv[1])
+          protoc = sys.argv[2]
+          replacements = 0
+          for p in root.rglob('*'):
+              if not p.is_file():
+                  continue
+              try:
+                  s = p.read_text()
+              except (UnicodeDecodeError, OSError):
+                  continue
+              if 'protobuf::protoc' not in s:
+                  continue
+              new = s.replace('protobuf::protoc', protoc)
+              if new != s:
+                  p.write_text(new)
+                  replacements += s.count('protobuf::protoc')
+                  print(f'Patched protoc rule: {p}')
+          print(f'Replaced {replacements} protobuf::protoc reference(s) with {protoc}')
+          if replacements == 0:
+              print('No literal protobuf::protoc remained; checking generated shadnet rule...')
+          PY
+          grep -R -n -E 'shadnet\.proto|shadnet\.pb\.cc' "$RUNNER_TEMP/shadps4-ios" | head -30 || true
+          if grep -R -q 'protobuf::protoc' "$RUNNER_TEMP/shadps4-ios"; then
+            echo 'ERROR: generated build still contains protobuf::protoc'
+            exit 1
+          fi
+
       - name: Build shadPS4 iOS engine
         shell: bash
         run: |
