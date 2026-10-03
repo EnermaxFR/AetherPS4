@@ -53,6 +53,8 @@ jobs:
           p.write_text(s)
           PY
           # ImGuiFileDialog uses std::system(), which Apple marks unavailable on iOS.
+          # Patch only the call sites. Do not inject a TARGET_OS_IPHONE shim before
+          # the source has included Apple's TargetConditionals definitions.
           python3 - "$ENGINE_ROOT" <<'PY'
           import sys
           from pathlib import Path
@@ -62,10 +64,18 @@ jobs:
               s = p.read_text(errors='ignore')
               if 'std::system(' not in s:
                   continue
-              shim = '''\n#if defined(__APPLE__) && defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE\nstatic int MaxPS4IOSSystemUnavailable(const char*) { return -1; }\n#endif\n'''
-              if 'MaxPS4IOSSystemUnavailable' not in s:
-                  s = shim + s
               s = s.replace('std::system(', 'MaxPS4IOSSystemUnavailable(')
+              # Put the helper after the include block so it is visible to every
+              # patched call without relying on unavailable iOS libc system().
+              lines = s.splitlines(True)
+              insert_at = 0
+              for i, line in enumerate(lines):
+                  if line.lstrip().startswith('#include'):
+                      insert_at = i + 1
+              helper = '\n#if defined(__APPLE__)\nstatic int MaxPS4IOSSystemUnavailable(const char*) { return -1; }\n#endif\n'
+              if 'static int MaxPS4IOSSystemUnavailable' not in s:
+                  lines.insert(insert_at, helper)
+                  s = ''.join(lines)
               p.write_text(s)
               patched += 1
               print('patched std::system for iOS:', p)
